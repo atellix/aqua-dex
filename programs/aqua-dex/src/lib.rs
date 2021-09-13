@@ -16,8 +16,8 @@ use crate::slab_alloc::{ SlabPageAlloc, CritMapHeader, CritMap, AnyNode, LeafNod
 
 pub const MAX_ORDERS: u32 = 128;    // Max orders on each side of the orderbook
 pub const MAX_ACCOUNTS: u32 = 256;  // Max number of accounts per settlement data file
-pub const SPL_TOKEN_PK = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
-pub const ASC_TOKEN_PK = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL";
+pub const SPL_TOKEN_PK: &str = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
+pub const ASC_TOKEN_PK: &str = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL";
 
 #[repr(u8)]
 #[derive(PartialEq, Debug, Eq, Copy, Clone)]
@@ -112,83 +112,78 @@ fn verify_matching_accounts(left: &Pubkey, right: &Pubkey, error_msg: Option<Str
     Ok(())
 }
 
-fn create_associated_token_account(
-    funder: &AccountInfo,
-    account: &AccountInfo,
-    owner: &AccountInfo,
-    mint: &AccountInfo,
-    system_program: &AccountInfo,
-    spl_token_program: &AccountInfo,
-    rent: &AccountInfo,
-) -> ProgramResult {
-    let instr = Instruction {
-        program_id: asc_token,
-        accounts: vec![
-            AccountMeta::new(*funder.key, true),
-            AccountMeta::new(*account.key, false),
-            AccountMeta::new_readonly(*owner.key, false),
-            AccountMeta::new_readonly(*mint.key, false),
-            AccountMeta::new_readonly(*system_program.key, false),
-            AccountMeta::new_readonly(*spl_token_program.key, false),
-            AccountMeta::new_readonly(*rent.key, false),
-        ],
-        data: vec![],
-    };
-    let res = invoke(
-        &instr,
-        &[
-            funder.clone(),
-            account.clone(),
-            owner.clone(),
-            mint.clone(),
-            system.clone(),
-            spl_token_program.clone(),
-            rent.clone(),
-        ]
-    );
-    if res.is_err() {
-        msg!("Create associated token failed");
-        return Err(ErrorCode::InvalidAccount.into());
-    }
-    Ok(())
-}
-
 #[program]
 pub mod aqua_dex {
     use super::*;
 
     pub fn create_market(ctx: Context<CreateMarket>,
-        inp_param: u64,
+        inp_agent_nonce: u8,
+        inp_mkt_vault_nonce: u8,
+        inp_prc_vault_nonce: u8,
     ) -> ProgramResult {
         let acc_market = &ctx.accounts.market.to_account_info();
         let acc_state = &ctx.accounts.state.to_account_info();
         let acc_agent = &ctx.accounts.agent.to_account_info();
+        let acc_manager = &ctx.accounts.manager.to_account_info();
         let acc_mkt_mint = &ctx.accounts.mkt_mint.to_account_info();
         let acc_mkt_vault = &ctx.accounts.mkt_vault.to_account_info();
         let acc_prc_mint = &ctx.accounts.prc_mint.to_account_info();
         let acc_prc_vault = &ctx.accounts.prc_vault.to_account_info();
 
         // Verify market agent
-        let acc_root_expected = Pubkey::create_program_address(&[ctx.program_id.as_ref(), &[inp_root_nonce]], ctx.program_id)
+        let acc_agent_expected = Pubkey::create_program_address(&[acc_market.key.as_ref(), &[inp_agent_nonce]], ctx.program_id)
             .map_err(|_| ErrorCode::InvalidDerivedAccount)?;
-        verify_matching_accounts(acc_root.key, &acc_root_expected, Some(String::from("Invalid root data")))?;
+        verify_matching_accounts(acc_agent.key, &acc_agent_expected, Some(String::from("Invalid market agent")))?;
 
         let spl_token: Pubkey = Pubkey::from_str(SPL_TOKEN_PK).unwrap();
         let asc_token: Pubkey = Pubkey::from_str(ASC_TOKEN_PK).unwrap();
 
         // Verify associated token (market)
         let derived_mkt_vault = Pubkey::create_program_address(
-            &[
-                &acc_root.key.to_bytes(),
-                &spl_token.to_bytes(),
-                &acc_mint.key.to_bytes(),
-                &[inp_tokn_nonce]
-            ],
+            &[&acc_agent.key.to_bytes(), &spl_token.to_bytes(), &acc_mkt_mint.key.to_bytes(), &[inp_mkt_vault_nonce]],
             &asc_token
         ).map_err(|_| ErrorCode::InvalidDerivedAccount)?;
-        if derived_key != *acc_tokn.key {
-            msg!("Invalid token account");
+        if derived_mkt_vault != *acc_mkt_vault.key {
+            msg!("Invalid market token vault");
             return Err(ErrorCode::InvalidDerivedAccount.into());
+        }
+
+        // Verify associated token (pricing)
+        let derived_prc_vault = Pubkey::create_program_address(
+            &[&acc_agent.key.to_bytes(), &spl_token.to_bytes(), &acc_prc_mint.key.to_bytes(), &[inp_prc_vault_nonce]],
+            &asc_token
+        ).map_err(|_| ErrorCode::InvalidDerivedAccount)?;
+        if derived_prc_vault != *acc_prc_vault.key {
+            msg!("Invalid pricing token vault");
+            return Err(ErrorCode::InvalidDerivedAccount.into());
+        }
+
+        // Create token vaults
+        let acc_spl = &ctx.accounts.spl_token_prog.to_account_info();
+        let acc_asc = &ctx.accounts.asc_token_prog.to_account_info();
+        let acc_sys = &ctx.accounts.sys_prog.to_account_info();
+        let acc_rent = &ctx.accounts.sys_rent.to_account_info();
+
+        let instr = Instruction {
+            program_id: asc_token,
+            accounts: vec![
+                AccountMeta::new(*acc_manager.key, true),
+                AccountMeta::new(*acc_mkt_vault.key, false),
+                AccountMeta::new_readonly(*acc_agent.key, false),
+                AccountMeta::new_readonly(*acc_mkt_mint.key, false),
+                AccountMeta::new_readonly(solana_program::system_program::id(), false),
+                AccountMeta::new_readonly(spl_token, false),
+                AccountMeta::new_readonly(sysvar::rent::id(), false),
+            ],
+            data: vec![],
+        };
+        let res = invoke(&instr, &[
+            acc_manager.clone(), acc_mkt_vault.clone(), acc_agent.clone(), acc_mkt_mint.clone(),
+            acc_spl.clone(), acc_sys.clone(), acc_rent.clone(),
+        ]);
+        if res.is_err() {
+            msg!("Create associated token failed");
+            return Err(ErrorCode::ExternalError.into());
         }
 
         Ok(())
@@ -221,6 +216,8 @@ pub struct CreateMarket<'info> {
     pub state: AccountInfo<'info>,
     #[account(mut)]
     pub agent: AccountInfo<'info>,
+    #[account(mut, signer)]
+    pub manager: AccountInfo<'info>,
     pub mkt_mint: AccountInfo<'info>,
     #[account(mut)]
     pub mkt_vault: AccountInfo<'info>,
@@ -233,6 +230,13 @@ pub struct CreateMarket<'info> {
     pub settle_a: AccountInfo<'info>,
     #[account(mut)]
     pub settle_b: AccountInfo<'info>,
+    #[account(address = token::ID)]
+    pub spl_token_prog: AccountInfo<'info>,
+    pub asc_token_prog: AccountInfo<'info>,
+    #[account(address = system_program::ID)]
+    pub sys_prog: AccountInfo<'info>,
+    #[account(address = sysvar::rent::ID)]
+    pub sys_rent: AccountInfo<'info>,
 }
 
 #[account]
@@ -279,6 +283,8 @@ pub enum ErrorCode {
     InvalidAccount,
     #[msg("Invalid derived account")]
     InvalidDerivedAccount,
+    #[msg("External error")]
+    ExternalError,
     #[msg("Overflow")]
     Overflow,
 }
