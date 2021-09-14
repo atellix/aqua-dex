@@ -421,7 +421,7 @@ struct InnerNode {
     key: u128,
     prefix_len: u32,
     children: [u32; 2],
-    _padding: [u32; 5],
+    _padding: [u32; 6],
 }
 unsafe impl Zeroable for InnerNode {}
 unsafe impl Pod for InnerNode {}
@@ -438,6 +438,7 @@ impl InnerNode {
 #[repr(packed)]
 pub struct LeafNode {
     tag: u32,
+    slot: u32,
     key: u128,
     owner: [u8; 32],
 }
@@ -448,11 +449,13 @@ impl LeafNode {
     #[inline]
     pub fn new(
         key: u128,
+        slot: u32,
         owner: &Pubkey,
     ) -> Self {
         LeafNode {
             tag: NodeTag::LeafNode.into(),
             key: key,
+            slot: slot,
             owner: owner.to_bytes(),
         }
     }
@@ -460,6 +463,11 @@ impl LeafNode {
     #[inline]
     pub fn key(&self) -> u128 {
         self.key
+    }
+
+    #[inline]
+    pub fn slot(&self) -> u32 {
+        self.slot
     }
 
     #[inline]
@@ -474,7 +482,7 @@ impl LeafNode {
 struct FreeNode {
     tag: u32,
     next: u32,
-    _padding: [u32; 11],
+    _padding: [u32; 12],
 }
 unsafe impl Zeroable for FreeNode {}
 unsafe impl Pod for FreeNode {}
@@ -487,7 +495,7 @@ const fn _const_max(a: usize, b: usize) -> usize {
 const _INNER_NODE_SIZE: usize = size_of::<InnerNode>();
 const _LEAF_NODE_SIZE: usize = size_of::<LeafNode>();
 const _FREE_NODE_SIZE: usize = size_of::<FreeNode>();
-const _NODE_SIZE: usize = 52;
+const _NODE_SIZE: usize = 56;
 
 const _INNER_NODE_ALIGN: usize = align_of::<InnerNode>();
 const _LEAF_NODE_ALIGN: usize = align_of::<LeafNode>();
@@ -507,7 +515,7 @@ const_assert_eq!(_NODE_ALIGN, _FREE_NODE_ALIGN);
 #[allow(dead_code)]
 pub struct AnyNode {
     tag: u32,
-    data: [u32; 12],
+    data: [u32; 13],
 }
 unsafe impl Zeroable for AnyNode {}
 unsafe impl Pod for AnyNode {}
@@ -813,25 +821,24 @@ impl CritMap<'_> {
     }
 
     #[inline]
-    pub fn get_min(&self) -> Option<(u32, &LeafNode)> {
+    pub fn get_min(&self) -> Option<&LeafNode> {
         let handle: NodeHandle = self.find_min()?;
-        msg!("Found Min: {}", handle.to_string());
         let leaf: &LeafNode = self.get(handle).unwrap().as_leaf().unwrap();
-        Some((handle as u32, leaf))
+        Some(leaf)
     }
 
     #[inline]
-    pub fn get_max(&self) -> Option<(u32, &LeafNode)> {
+    pub fn get_max(&self) -> Option<&LeafNode> {
         let handle: NodeHandle = self.find_max()?;
         let leaf: &LeafNode = self.get(handle).unwrap().as_leaf().unwrap();
-        Some((handle as u32, leaf))
+        Some(leaf)
     }
 
     #[inline]
     pub fn insert_leaf(
         &mut self,
         new_leaf: &LeafNode,
-    ) -> Result<(NodeHandle, Option<LeafNode>), SlabTreeError> {
+    ) -> Result<Option<LeafNode>, SlabTreeError> {
         let mut root: NodeHandle = match self.root() {
             Some(h) => h,
             None => {
@@ -840,7 +847,7 @@ impl CritMap<'_> {
                     Ok(handle) => {
                         self.header_mut().root_node = handle;
                         self.header_mut().leaf_count = 1;
-                        return Ok((handle, None));
+                        return Ok(None);
                     }
                     Err(()) => return Err(SlabTreeError::OutOfSpace),
                 }
@@ -854,7 +861,7 @@ impl CritMap<'_> {
                 if let Some(NodeRef::Leaf(&old_root_as_leaf)) = root_contents.case() {
                     // clobber the existing leaf
                     *self.get_mut(root).unwrap() = *new_leaf.as_ref();
-                    return Ok((root, Some(old_root_as_leaf)));
+                    return Ok(Some(old_root_as_leaf));
                 }
             }
             let shared_prefix_len: u32 = (root_key ^ new_leaf.key).leading_zeros();
@@ -898,11 +905,11 @@ impl CritMap<'_> {
             new_root.children[new_leaf_crit_bit as usize] = new_leaf_handle;
             new_root.children[old_root_crit_bit as usize] = moved_root_handle;
             self.header_mut().leaf_count += 1;
-            return Ok((new_leaf_handle, None));
+            return Ok(None);
         }
     }
 
-    pub fn get_key(&self, search_key: u128) -> Option<(u32, &LeafNode)> {
+    pub fn get_key(&self, search_key: u128) -> Option<&LeafNode> {
         let mut node_handle: NodeHandle = self.root()?;
         loop {
             let node_ref = self.get(node_handle).unwrap();
@@ -913,7 +920,7 @@ impl CritMap<'_> {
                 return None;
             }
             match node_ref.case().unwrap() {
-                NodeRef::Leaf(_) => break Some((node_handle as u32, node_ref.as_leaf().unwrap())),
+                NodeRef::Leaf(_) => break Some(node_ref.as_leaf().unwrap()),
                 NodeRef::Inner(inner) => {
                     let crit_bit_mask = (1u128 << 127) >> node_prefix_len;
                     let _search_key_crit_bit = (search_key & crit_bit_mask) != 0;
@@ -993,7 +1000,7 @@ impl CritMap<'_> {
     } */
 
     #[inline]
-    pub fn remove_by_key(&mut self, search_key: u128) -> Option<(u32, LeafNode)> {
+    pub fn remove_by_key(&mut self, search_key: u128) -> Option<LeafNode> {
         let mut parent_h = self.root()?;
         let mut child_h;
         let mut crit_bit;
@@ -1004,7 +1011,7 @@ impl CritMap<'_> {
                 header.root_node = 0;
                 header.leaf_count = 0;
                 let _old_root = self.remove(parent_h).unwrap();
-                return Some((parent_h, leaf));
+                return Some(leaf);
             }
             NodeRef::Leaf(_) => return None,
             NodeRef::Inner(inner) => {
@@ -1037,16 +1044,16 @@ impl CritMap<'_> {
         let other_child_node_contents = self.remove(other_child_h).unwrap();
         *self.get_mut(parent_h).unwrap() = other_child_node_contents;
         self.header_mut().leaf_count -= 1;
-        Some((child_h as u32, cast(self.remove(child_h).unwrap())))
+        Some(cast(self.remove(child_h).unwrap()))
     }
 
     #[inline]
-    pub fn remove_min(&mut self) -> Option<(u32, LeafNode)> {
+    pub fn remove_min(&mut self) -> Option<LeafNode> {
         self.remove_by_key(self.get(self.find_min()?)?.key()?)
     }
 
     #[inline]
-    pub fn remove_max(&mut self) -> Option<(u32, LeafNode)> {
+    pub fn remove_max(&mut self) -> Option<LeafNode> {
         self.remove_by_key(self.get(self.find_max()?)?.key()?)
     }
 
@@ -1147,6 +1154,7 @@ impl CritMap<'_> {
 #[derive(Copy, Clone)]
 #[repr(packed)]
 pub struct SlabVec {
+    free_top: u32,
     next_index: u32,
 }
 unsafe impl Zeroable for SlabVec {}
@@ -1156,6 +1164,7 @@ impl SlabVec {
     #[inline]
     pub fn new() -> Self {
         SlabVec {
+            free_top: 0,
             next_index: 0,
         }
     }
@@ -1164,6 +1173,14 @@ impl SlabVec {
         let next = self.next_index;
         self.next_index = self.next_index.checked_add(1).expect("Overflow");
         next
+    }
+
+    pub fn free_top(&self) -> u32 {
+        self.free_top
+    }
+
+    pub fn set_free_top(&mut self, new_free: u32) {
+        self.free_top = new_free
     }
 
     pub fn len(&self) -> u32 {

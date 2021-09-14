@@ -1,4 +1,4 @@
-use std::{ io::Cursor, string::String, str::FromStr, result::Result as FnResult, mem::size_of };
+use std::{ io::Cursor, string::String, str::FromStr, result::Result as FnResult, mem::size_of, convert::TryFrom };
 use bytemuck::{ Pod, Zeroable, cast_slice_mut };
 use byte_slice_cast::*;
 use num_enum::{ TryFromPrimitive, IntoPrimitive };
@@ -86,6 +86,29 @@ impl Order {
     pub fn price(key: u128) -> u64 {
         (key >> 64) as u64
     }
+
+    #[inline]
+    fn next_index(pt: &mut SlabPageAlloc, data_type: DT) -> FnResult<u32, ProgramError> {
+        let svec = pt.header_mut::<SlabVec>(index_datatype(data_type));
+        let free_top = svec.free_top();
+        if free_top == 0 { // Empty free list
+            return Ok(svec.next_index());
+        }
+        let free_index = free_top.checked_sub(1).ok_or(ProgramError::from(ErrorCode::Overflow))?;
+        let index_act = pt.index::<Order>(index_datatype(data_type), free_index as usize);
+        let index_ptr = u32::try_from(index_act.amount()).expect("Invalid index");
+        pt.header_mut::<SlabVec>(index_datatype(data_type)).set_free_top(index_ptr);
+        Ok(free_index)
+    }
+
+    #[inline]
+    fn free_index(pt: &mut SlabPageAlloc, data_type: DT, idx: u32) -> ProgramResult {
+        let free_top = pt.header::<SlabVec>(index_datatype(data_type)).free_top();
+        pt.index_mut::<Order>(index_datatype(data_type), idx as usize).set_amount(free_top as u64);
+        let new_top = idx.checked_add(1).ok_or(ProgramError::from(ErrorCode::Overflow))?;
+        pt.header_mut::<SlabVec>(index_datatype(data_type)).set_free_top(new_top);
+        Ok(())
+    }
 }
 
 #[derive(Copy, Clone)]
@@ -121,55 +144,65 @@ fn map_datatype(data_type: DT) -> u16 {
 #[inline]
 fn map_len(data_type: DT) -> u32 {
     match data_type {
-        DT::BidOrderMap => MAX_ORDERS,
-        DT::AskOrderMap => MAX_ORDERS,
-        DT::AccountMap  => MAX_ACCOUNTS,
-        _ => 0,
+        DT::BidOrder => MAX_ORDERS,
+        DT::AskOrder => MAX_ORDERS,
+        DT::Account  => MAX_ACCOUNTS,
+        _ => { panic!("Invalid datatype") },
     }
 }
 
 #[inline]
-fn map_get(pt: &mut SlabPageAlloc, data_type: DT, key: u128) -> Option<(u32, LeafNode)> {
+fn index_datatype(data_type: DT) -> u16 {
+    match data_type {
+        DT::BidOrder => OrderDT::BidOrder as u16,
+        DT::AskOrder => OrderDT::AskOrder as u16,
+        DT::Account => SettleDT::Account as u16,
+        _ => { panic!("Invalid datatype") },
+    }
+}
+
+#[inline]
+fn map_get(pt: &mut SlabPageAlloc, data_type: DT, key: u128) -> Option<LeafNode> {
     let cm = CritMap { slab: pt, type_id: map_datatype(data_type), capacity: map_len(data_type) };
     let res = cm.get_key(key);
     match res {
         None => None,
-        Some(res) => Some((res.0, res.1.clone())),
+        Some(res) => Some(res.clone()),
     }
 }
 
 #[inline]
-fn map_min(pt: &mut SlabPageAlloc, data_type: DT) -> Option<(u32, LeafNode)> {
+fn map_min(pt: &mut SlabPageAlloc, data_type: DT) -> Option<LeafNode> {
     let cm = CritMap { slab: pt, type_id: map_datatype(data_type), capacity: map_len(data_type) };
     let res = cm.get_min();
     match res {
         None => None,
-        Some(res) => Some((res.0, res.1.clone())),
+        Some(res) => Some(res.clone()),
     }
 }
 
 #[inline]
-fn map_max(pt: &mut SlabPageAlloc, data_type: DT) -> Option<(u32, LeafNode)> {
+fn map_max(pt: &mut SlabPageAlloc, data_type: DT) -> Option<LeafNode> {
     let cm = CritMap { slab: pt, type_id: map_datatype(data_type), capacity: map_len(data_type) };
     let res = cm.get_max();
     match res {
         None => None,
-        Some(res) => Some((res.0, res.1.clone())),
+        Some(res) => Some(res.clone()),
     }
 }
 
 #[inline]
-fn map_insert(pt: &mut SlabPageAlloc, data_type: DT, node: &LeafNode) -> FnResult<u32, SlabTreeError> {
+fn map_insert(pt: &mut SlabPageAlloc, data_type: DT, node: &LeafNode) -> FnResult<(), SlabTreeError> {
     let mut cm = CritMap { slab: pt, type_id: map_datatype(data_type), capacity: map_len(data_type) };
     let res = cm.insert_leaf(node)?;
-    Ok(res.0)
+    Ok(())
 }
 
 #[inline]
-fn map_remove(pt: &mut SlabPageAlloc, data_type: DT, key: u128) -> FnResult<u32, SlabTreeError> {
+fn map_remove(pt: &mut SlabPageAlloc, data_type: DT, key: u128) -> FnResult<(), SlabTreeError> {
     let mut cm = CritMap { slab: pt, type_id: map_datatype(data_type), capacity: map_len(data_type) };
     let res = cm.remove_by_key(key).ok_or(SlabTreeError::NotFound)?;
-    Ok(res.0)
+    Ok(())
 }
 
 #[inline]
@@ -202,14 +235,14 @@ fn log_settlement(
 ) -> ProgramResult {
     // TODO: use log B
     let owner_key: u128 = CritMap::bytes_hash(owner.as_ref());
-    let mut new_balance: u64;
+    let mut new_balance: u64 = amount; // Fix
     let log_data: &mut[u8] = &mut settle_a.try_borrow_mut_data()?;
     let (_header, page_table) = mut_array_refs![log_data, size_of::<AccountsHeader>(); .. ;];
     let sl = SlabPageAlloc::new(page_table);
     let has_item = map_get(sl, DT::Account, owner_key);
-    if has_item.is_none() {
+    /*if has_item.is_none() {
         new_balance = amount;
-        let new_item = map_insert(sl, DT::Account, &LeafNode::new(owner_key, owner));
+        let new_item = map_insert(sl, DT::Account, &LeafNode::new(owner_key, 0, owner));
         if new_item.is_ok() {
             let mut mkt_bal: u64 = 0;
             let mut prc_bal: u64 = 0;
@@ -230,7 +263,7 @@ fn log_settlement(
         }
     } else {
         let log_item = has_item.unwrap();
-        let current_acct = sl.index::<AccountEntry>(SettleDT::Account.into(), log_item.0 as usize);
+        let current_acct = sl.index::<AccountEntry>(SettleDT::Account.into(), 0 as usize);
         let mut mkt_bal: u64 = current_acct.mkt_token_balance;
         let mut prc_bal: u64 = current_acct.prc_token_balance;
         if mkt_token {
@@ -244,8 +277,8 @@ fn log_settlement(
             mkt_token_balance: mkt_bal,
             prc_token_balance: prc_bal,
         };
-        *sl.index_mut::<AccountEntry>(SettleDT::Account.into(), log_item.0 as usize) = updated_acct;
-    }
+        *sl.index_mut::<AccountEntry>(SettleDT::Account.into(), 0 as usize) = updated_acct;
+    } */
 
     if mkt_token {
         msg!("Atellix: Settle Market Token - Amt: {} Bal: {} Key: {}", amount.to_string(), new_balance.to_string(), owner.to_string());
@@ -543,7 +576,7 @@ pub mod aqua_dex {
         let tokens_remaining = inp_quantity.checked_sub(tokens_filled).ok_or(ProgramError::from(ErrorCode::Overflow))?;
         if tokens_remaining > 0 && inp_post {
             let order_id = Order::new_key(state_upd, Side::Bid, inp_price);
-            let order_node = LeafNode::new(order_id, &acc_user.key);
+            let order_node = LeafNode::new(order_id, 0, &acc_user.key);
             let order = Order { amount: tokens_remaining };
             let entry = map_insert(ob, DT::BidOrder, &order_node);
             if entry.is_err() {
@@ -644,7 +677,7 @@ pub mod aqua_dex {
 
         // Add order to orderbook
         let order_id = Order::new_key(state_upd, Side::Ask, inp_price);
-        let order_node = LeafNode::new(order_id, &acc_user.key);
+        let order_node = LeafNode::new(order_id, 0, &acc_user.key);
         let order = Order { amount: inp_quantity };
         let orderbook_data: &mut[u8] = &mut acc_orders.try_borrow_mut_data()?;
         let ob = SlabPageAlloc::new(orderbook_data);
