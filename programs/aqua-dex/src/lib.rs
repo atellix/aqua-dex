@@ -239,7 +239,7 @@ pub mod aqua_dex {
         let acc_sys = &ctx.accounts.sys_prog.to_account_info();
         let acc_rent = &ctx.accounts.sys_rent.to_account_info();
 
-        let instr = Instruction {
+        let instr1 = Instruction {
             program_id: asc_token,
             accounts: vec![
                 AccountMeta::new(*acc_manager.key, true),
@@ -252,12 +252,34 @@ pub mod aqua_dex {
             ],
             data: vec![],
         };
-        let res = invoke(&instr, &[
+        let res1 = invoke(&instr1, &[
             acc_manager.clone(), acc_mkt_vault.clone(), acc_agent.clone(), acc_mkt_mint.clone(),
             acc_spl.clone(), acc_sys.clone(), acc_rent.clone(),
         ]);
-        if res.is_err() {
-            msg!("Create associated token failed");
+        if res1.is_err() {
+            msg!("Create associated token failed for market token");
+            return Err(ErrorCode::ExternalError.into());
+        }
+
+        let instr2 = Instruction {
+            program_id: asc_token,
+            accounts: vec![
+                AccountMeta::new(*acc_manager.key, true),
+                AccountMeta::new(*acc_prc_vault.key, false),
+                AccountMeta::new_readonly(*acc_agent.key, false),
+                AccountMeta::new_readonly(*acc_prc_mint.key, false),
+                AccountMeta::new_readonly(solana_program::system_program::id(), false),
+                AccountMeta::new_readonly(spl_token, false),
+                AccountMeta::new_readonly(sysvar::rent::id(), false),
+            ],
+            data: vec![],
+        };
+        let res2 = invoke(&instr2, &[
+            acc_manager.clone(), acc_prc_vault.clone(), acc_agent.clone(), acc_prc_mint.clone(),
+            acc_spl.clone(), acc_sys.clone(), acc_rent.clone(),
+        ]);
+        if res2.is_err() {
+            msg!("Create associated token failed for pricing token");
             return Err(ErrorCode::ExternalError.into());
         }
 
@@ -270,6 +292,7 @@ pub mod aqua_dex {
             order_fee: 0,
             state: *acc_state.key,
             agent: *acc_agent.key,
+            agent_nonce: inp_agent_nonce,
             manager: *acc_manager.key,
             mkt_mint: *acc_mkt_mint.key,
             mkt_vault: *acc_mkt_vault.key,
@@ -339,7 +362,7 @@ pub mod aqua_dex {
         Ok(())
     }
 
-    pub fn limit_bid(ctx: Context<LimitBid>,
+    pub fn limit_bid(ctx: Context<LimitOrder>,
         inp_quantity: u64,
         inp_price: u64,
     ) -> ProgramResult {
@@ -347,6 +370,7 @@ pub mod aqua_dex {
         let market_state = &ctx.accounts.state;
         let acc_agent = &ctx.accounts.agent.to_account_info();
         let acc_user = &ctx.accounts.user.to_account_info();
+        let acc_mkt_vault = &ctx.accounts.mkt_vault.to_account_info();
         let acc_prc_vault = &ctx.accounts.prc_vault.to_account_info();
         let acc_orders = &ctx.accounts.orders.to_account_info();
         let acc_settle1 = &ctx.accounts.settle_a.to_account_info();
@@ -354,19 +378,23 @@ pub mod aqua_dex {
 
         verify_matching_accounts(&market.state, &market_state.key(), Some(String::from("Invalid market state")))?;
         verify_matching_accounts(&market.agent, &acc_agent.key, Some(String::from("Invalid market agent")))?;
+        verify_matching_accounts(&market.mkt_vault, &acc_mkt_vault.key, Some(String::from("Invalid market token vault")))?;
         verify_matching_accounts(&market.prc_vault, &acc_prc_vault.key, Some(String::from("Invalid pricing token vault")))?;
         verify_matching_accounts(&market.orders, &acc_orders.key, Some(String::from("Invalid orderbook")))?;
 
         let s1 = verify_matching_accounts(&market.settle_a, &acc_settle1.key, Some(String::from("Settlement log 1")));
         let s2 = verify_matching_accounts(&market.settle_b, &acc_settle2.key, Some(String::from("Settlement log 2")));
         if s1.is_err() || s2.is_err() {
+            // This is expected to happen sometimes due to a race condition between settlment log rollovers and new orders
+            // Reload the current "market" account with the latest settlement log accounts and retry the transaction
             msg!("Please update market data and retry");
             return Err(ErrorCode::RetrySettlementAccount.into());
         }
 
         msg!("Atellix: Limit Order Bid - Qty: {} @ Price: {}", inp_quantity.to_string(), inp_price.to_string());
 
-        // TODO: Check order position
+        // Check if order can be filled
+        let tokens_out = 0;
 
         // Add order to orderbook
         let order_id = Order::new_key(&mut ctx.accounts.state, Side::Bid, inp_price);
@@ -401,6 +429,77 @@ pub mod aqua_dex {
         msg!("Atellix: Pricing Vault Balance: {} (Orderbook: {})",
             state_upd.prc_vault_balance,
             state_upd.prc_order_balance,
+        );
+    
+        Ok(())
+    }
+
+    pub fn limit_ask(ctx: Context<LimitOrder>,
+        inp_quantity: u64,
+        inp_price: u64,
+    ) -> ProgramResult {
+        let market = &ctx.accounts.market;
+        let market_state = &ctx.accounts.state;
+        let acc_agent = &ctx.accounts.agent.to_account_info();
+        let acc_user = &ctx.accounts.user.to_account_info();
+        let acc_mkt_vault = &ctx.accounts.mkt_vault.to_account_info();
+        let acc_prc_vault = &ctx.accounts.prc_vault.to_account_info();
+        let acc_orders = &ctx.accounts.orders.to_account_info();
+        let acc_settle1 = &ctx.accounts.settle_a.to_account_info();
+        let acc_settle2 = &ctx.accounts.settle_b.to_account_info();
+
+        verify_matching_accounts(&market.state, &market_state.key(), Some(String::from("Invalid market state")))?;
+        verify_matching_accounts(&market.agent, &acc_agent.key, Some(String::from("Invalid market agent")))?;
+        verify_matching_accounts(&market.mkt_vault, &acc_mkt_vault.key, Some(String::from("Invalid market token vault")))?;
+        verify_matching_accounts(&market.prc_vault, &acc_prc_vault.key, Some(String::from("Invalid pricing token vault")))?;
+        verify_matching_accounts(&market.orders, &acc_orders.key, Some(String::from("Invalid orderbook")))?;
+
+        let s1 = verify_matching_accounts(&market.settle_a, &acc_settle1.key, Some(String::from("Settlement log 1")));
+        let s2 = verify_matching_accounts(&market.settle_b, &acc_settle2.key, Some(String::from("Settlement log 2")));
+        if s1.is_err() || s2.is_err() {
+            // This is expected to happen sometimes due to a race condition between settlment log rollovers and new orders
+            // Reload the current "market" account with the latest settlement log accounts and retry the transaction
+            msg!("Please update market data and retry");
+            return Err(ErrorCode::RetrySettlementAccount.into()); 
+        }
+
+        msg!("Atellix: Limit Order Ask - Qty: {} @ Price: {}", inp_quantity.to_string(), inp_price.to_string());
+
+        // TODO: Check if order can be filled
+
+        // Add order to orderbook
+        let order_id = Order::new_key(&mut ctx.accounts.state, Side::Ask, inp_price);
+        let order_node = LeafNode::new(order_id, &acc_user.key);
+        let order = Order { amount: inp_quantity };
+        let orderbook_data: &mut[u8] = &mut acc_orders.try_borrow_mut_data()?;
+        let ob = SlabPageAlloc::new(orderbook_data);
+        let entry = map_insert(ob, DT::AskOrder, &order_node);
+        if entry.is_err() {
+            // TODO: Evict orders if necessary
+            msg!("Failed to add order");
+            return Err(ErrorCode::InternalError.into());
+        } else {
+            *ob.index_mut::<Order>(OrderDT::AskOrder.into(), entry.unwrap() as usize) = order;
+        }
+        msg!("Atellix: Posted order");
+
+        // TODO: Pay for settlement log space
+
+        // Send tokens to the vault
+        let in_accounts = Transfer {
+            from: ctx.accounts.user_mkt_token.to_account_info(),
+            to: ctx.accounts.mkt_vault.to_account_info(),
+            authority: ctx.accounts.user.to_account_info(),
+        };
+        let cpi_prog = ctx.accounts.spl_token_prog.clone();
+        let in_ctx = CpiContext::new(cpi_prog, in_accounts);
+        token::transfer(in_ctx, inp_quantity)?;
+        let state_upd = &mut ctx.accounts.state;
+        state_upd.mkt_vault_balance = state_upd.mkt_vault_balance + inp_quantity;
+        state_upd.mkt_order_balance = state_upd.mkt_order_balance + inp_quantity;
+        msg!("Atellix: Market Vault Balance: {} (Orderbook: {})",
+            state_upd.mkt_vault_balance,
+            state_upd.mkt_order_balance,
         );
     
         Ok(())
@@ -450,7 +549,7 @@ pub struct CreateMarket<'info> {
 }
 
 #[derive(Accounts)]
-pub struct LimitBid<'info> {
+pub struct LimitOrder<'info> {
     #[account(mut)]
     pub market: ProgramAccount<'info, Market>,
     #[account(mut)]
@@ -459,7 +558,11 @@ pub struct LimitBid<'info> {
     #[account(mut, signer)]
     pub user: AccountInfo<'info>,
     #[account(mut)]
-    pub user_prc_token: AccountInfo<'info>, // Deposit pricing tokens for "Bid" orders
+    pub user_mkt_token: AccountInfo<'info>, // Deposit market tokens for "Ask" orders
+    #[account(mut)]
+    pub user_prc_token: AccountInfo<'info>, // Withdraw pricing tokens if the order is filled or partially filled
+    #[account(mut)]
+    pub mkt_vault: AccountInfo<'info>,
     #[account(mut)]
     pub prc_vault: AccountInfo<'info>,
     #[account(mut)]
@@ -472,35 +575,13 @@ pub struct LimitBid<'info> {
     pub spl_token_prog: AccountInfo<'info>,
 }
 
-/*#[derive(Accounts)]
-pub struct LimitAsk<'info> {
-    #[account(mut)]
-    pub market: AccountInfo<'info>,
-    #[account(mut)]
-    pub state: AccountInfo<'info>,
-    pub agent: AccountInfo<'info>,
-    #[account(mut, signer)]
-    pub user: AccountInfo<'info>,
-    #[account(mut)]
-    pub user_mkt_token: AccountInfo<'info>, // Deposit market tokens for "Ask" orders
-    #[account(mut)]
-    pub mkt_vault: AccountInfo<'info>,
-    #[account(mut)]
-    pub orders: AccountInfo<'info>,
-    #[account(mut)]
-    pub settle_a: AccountInfo<'info>,
-    #[account(mut)]
-    pub settle_b: AccountInfo<'info>,
-    #[account(address = token::ID)]
-    pub spl_token_prog: AccountInfo<'info>,
-}*/
-
 #[account]
 pub struct Market {
     pub active: bool,                   // Active flag
     pub order_fee: u64,                 // Fee to reserve space in a settlement log when an order is filled or evicted
     pub state: Pubkey,                  // Market statistics (frequently updated market details)
-    pub agent: Pubkey,                  // Market program derived address for signing transfers
+    pub agent: Pubkey,                  // Program derived address for signing transfers
+    pub agent_nonce: u8,                // Agent nonce
     pub manager: Pubkey,                // Market manager
     pub mkt_mint: Pubkey,               // Token mint for market tokens (Token A)
     pub mkt_vault: Pubkey,              // Vault for Token A (an associated token account controlled by this program)

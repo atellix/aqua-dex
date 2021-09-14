@@ -1,0 +1,18 @@
+[package]
+name = "slab-alloc"
+version = "1.0.0"
+description = "Paged allocations for data slices"
+edition = "2018"
+
+[lib]
+crate-type = ["cdylib", "lib"]
+name = "slab_alloc"
+
+[dependencies]
+arrayref = "0.3.6"
+bytemuck = "1.7.2"
+murmur3 = "0.5.1"
+num_enum = "0.5.3"
+solana-program = "1.7.11"
+static_assertions = "1.1.0"
+thiserror = "1.0.26"
