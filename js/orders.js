@@ -78,10 +78,32 @@ async function main() {
     console.log('Vault Token: ' + tokenVault2.pubkey)
 
     if (true) {
-        console.log('Limit Ask')
+        console.log('Limit Ask 1')
         await aquadex.rpc.limitAsk(
             new anchor.BN(10 * 10000), // Quantity
             new anchor.BN(5 * 10000), // Price
+            {
+                accounts: {
+                    market: marketPK,
+                    state: marketStatePK,
+                    agent: new PublicKey(marketAgent.pubkey),
+                    user: provider.wallet.publicKey,
+                    userMktToken: new PublicKey(userToken1.pubkey),
+                    userPrcToken: new PublicKey(userToken2.pubkey),
+                    mktVault: new PublicKey(tokenVault1.pubkey),
+                    prcVault: new PublicKey(tokenVault2.pubkey),
+                    orders: ordersPK,
+                    settleA: settle1PK,
+                    settleB: settle2PK,
+                    splTokenProg: TOKEN_PROGRAM_ID,
+                }
+            }
+        )
+
+        console.log('Limit Ask 2')
+        await aquadex.rpc.limitAsk(
+            new anchor.BN(10 * 10000), // Quantity
+            new anchor.BN(5.1 * 10000), // Price
             {
                 accounts: {
                     market: marketPK,
@@ -103,7 +125,7 @@ async function main() {
 
     console.log('Limit Bid')
     await aquadex.rpc.limitBid(
-        new anchor.BN(9 * 10000),   // Quantity
+        new anchor.BN(11 * 10000),  // Quantity
         new anchor.BN(7 * 10000),   // Price
         true,                       // Post order
         false,                      // Require filled if not posted

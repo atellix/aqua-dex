@@ -815,6 +815,7 @@ impl CritMap<'_> {
     #[inline]
     pub fn get_min(&self) -> Option<(u32, &LeafNode)> {
         let handle: NodeHandle = self.find_min()?;
+        msg!("Found Min: {}", handle.to_string());
         let leaf: &LeafNode = self.get(handle).unwrap().as_leaf().unwrap();
         Some((handle as u32, leaf))
     }
