@@ -530,12 +530,11 @@ pub mod aqua_dex {
                 msg!("Atellix: No Orders In Orderbook");
                 break;
             }
-            let node_spec = node_res.unwrap();
-            let posted_node = node_spec.1;
-            let posted_order = ob.index::<Order>(OrderDT::AskOrder as u16, node_spec.0 as usize);
+            let posted_node = node_res.unwrap();
+            let posted_order = ob.index::<Order>(OrderDT::AskOrder as u16, posted_node.slot() as usize);
             let posted_qty = posted_order.amount;
             let posted_price = Order::price(posted_node.key());
-            msg!("Atellix: Found Ask Order[{}] - Qty: {} @ Price: {}", node_spec.0.to_string(), posted_qty.to_string(), posted_price.to_string());
+            msg!("Atellix: Found Ask Order[{}] - Qty: {} @ Price: {}", posted_node.slot().to_string(), posted_qty.to_string(), posted_price.to_string());
             if posted_price <= inp_price {
                 // Fill order
                 if posted_qty == tokens_to_fill {         // Match the entire order exactly
@@ -544,7 +543,7 @@ pub mod aqua_dex {
                     tokens_paid = tokens_paid.checked_add(tokens_part).ok_or(ProgramError::from(ErrorCode::Overflow))?;
                     msg!("Atellix: Filling - Qty: {} @ Price: {}", tokens_part.to_string(), posted_price.to_string());
                     map_remove(ob, DT::AskOrder, posted_node.key());
-                    ob.index_mut::<Order>(OrderDT::AskOrder as u16, node_spec.0 as usize).set_amount(0);
+                    Order::free_index(ob, DT::AskOrder, posted_node.slot());
                     log_settlement(state_upd, acc_settle1, acc_settle2, &posted_node.owner(), false, tokens_part)?;
                     break;
                 } else if posted_qty < tokens_to_fill {   // Match the entire order and continue
@@ -554,7 +553,7 @@ pub mod aqua_dex {
                     tokens_paid = tokens_paid.checked_add(tokens_part).ok_or(ProgramError::from(ErrorCode::Overflow))?;
                     msg!("Atellix: Filling - Qty: {} @ Price: {}", posted_qty.to_string(), posted_price.to_string());
                     map_remove(ob, DT::AskOrder, posted_node.key());
-                    ob.index_mut::<Order>(OrderDT::AskOrder as u16, node_spec.0 as usize).set_amount(0);
+                    Order::free_index(ob, DT::AskOrder, posted_node.slot());
                     log_settlement(state_upd, acc_settle1, acc_settle2, &posted_node.owner(), false, tokens_part)?;
                 } else if posted_qty > tokens_to_fill {   // Match part of the order
                     tokens_filled = tokens_filled.checked_add(tokens_to_fill).ok_or(ProgramError::from(ErrorCode::Overflow))?;
@@ -562,7 +561,7 @@ pub mod aqua_dex {
                     tokens_paid = tokens_paid.checked_add(tokens_part).ok_or(ProgramError::from(ErrorCode::Overflow))?;
                     msg!("Atellix: Filling - Qty: {} @ Price: {}", tokens_to_fill.to_string(), posted_price.to_string());
                     let new_amount = posted_qty.checked_sub(tokens_to_fill).ok_or(ProgramError::from(ErrorCode::Overflow))?;
-                    ob.index_mut::<Order>(OrderDT::AskOrder as u16, node_spec.0 as usize).set_amount(new_amount);
+                    ob.index_mut::<Order>(OrderDT::AskOrder as u16, posted_node.slot() as usize).set_amount(new_amount);
                     log_settlement(state_upd, acc_settle1, acc_settle2, &posted_node.owner(), false, tokens_part)?;
                     break;
                 }
@@ -576,7 +575,8 @@ pub mod aqua_dex {
         let tokens_remaining = inp_quantity.checked_sub(tokens_filled).ok_or(ProgramError::from(ErrorCode::Overflow))?;
         if tokens_remaining > 0 && inp_post {
             let order_id = Order::new_key(state_upd, Side::Bid, inp_price);
-            let order_node = LeafNode::new(order_id, 0, &acc_user.key);
+            let order_idx = Order::next_index(ob, DT::BidOrder)?;
+            let order_node = LeafNode::new(order_id, order_idx, &acc_user.key);
             let order = Order { amount: tokens_remaining };
             let entry = map_insert(ob, DT::BidOrder, &order_node);
             if entry.is_err() {
@@ -584,9 +584,9 @@ pub mod aqua_dex {
                 msg!("Failed to add order");
                 return Err(ErrorCode::InternalError.into());
             } else {
-                *ob.index_mut::<Order>(OrderDT::BidOrder.into(), entry.unwrap() as usize) = order;
+                *ob.index_mut::<Order>(OrderDT::BidOrder.into(), order_idx as usize) = order;
             }
-            msg!("Atellix: Posted Order - Qty: {} @ Price: {}", tokens_remaining.to_string(), inp_price.to_string());
+            msg!("Atellix: Posted Order[{}] - Qty: {} @ Price: {}", order_idx.to_string(), tokens_remaining.to_string(), inp_price.to_string());
         }
 
         // TODO: Pay for settlement log space
@@ -676,20 +676,20 @@ pub mod aqua_dex {
         // TODO: Check if order can be filled
 
         // Add order to orderbook
-        let order_id = Order::new_key(state_upd, Side::Ask, inp_price);
-        let order_node = LeafNode::new(order_id, 0, &acc_user.key);
-        let order = Order { amount: inp_quantity };
         let orderbook_data: &mut[u8] = &mut acc_orders.try_borrow_mut_data()?;
         let ob = SlabPageAlloc::new(orderbook_data);
+        let order_id = Order::new_key(state_upd, Side::Ask, inp_price);
+        let order_idx = Order::next_index(ob, DT::AskOrder)?;
+        let order_node = LeafNode::new(order_id, order_idx, &acc_user.key);
+        let order = Order { amount: inp_quantity };
         let entry = map_insert(ob, DT::AskOrder, &order_node);
         if entry.is_err() {
             // TODO: Evict orders if necessary
             msg!("Failed to add order");
             return Err(ErrorCode::InternalError.into());
         }
-        let entry_id = entry.unwrap();
-        *ob.index_mut::<Order>(OrderDT::AskOrder.into(), entry_id as usize) = order;
-        msg!("Atellix: Posted Order[{}] - Qty: {} @ Price: {}", entry_id.to_string(), inp_quantity.to_string(), inp_price.to_string());
+        *ob.index_mut::<Order>(OrderDT::AskOrder.into(), order_idx as usize) = order;
+        msg!("Atellix: Posted Order[{}] - Qty: {} @ Price: {}", order_idx.to_string(), inp_quantity.to_string(), inp_price.to_string());
 
         // TODO: Pay for settlement log space
 
