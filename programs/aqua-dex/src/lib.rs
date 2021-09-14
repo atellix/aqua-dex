@@ -102,21 +102,11 @@ unsafe impl Pod for AccountsHeader {}
 #[derive(Copy, Clone)]
 #[repr(packed)]
 pub struct AccountEntry {
-    pub is_mkt_token: bool, // Market token or pricing token
-    pub amount: u64,
+    pub mkt_token_balance: u64,
+    pub prc_token_balance: u64,
 }
 unsafe impl Zeroable for AccountEntry {}
 unsafe impl Pod for AccountEntry {}
-
-#[inline]
-fn index_datatype(data_type: DT) -> u16 {
-    match data_type {
-        DT::BidOrder => OrderDT::BidOrder as u16,
-        DT::AskOrder => OrderDT::AskOrder as u16,
-        DT::Account  => SettleDT::Account as u16,
-        _ => { panic!("Invalid datatype") },
-    }
-}
 
 #[inline]
 fn map_datatype(data_type: DT) -> u16 {
@@ -149,6 +139,26 @@ fn map_get(pt: &mut SlabPageAlloc, data_type: DT, key: u128) -> Option<(u32, Lea
 }
 
 #[inline]
+fn map_min(pt: &mut SlabPageAlloc, data_type: DT) -> Option<(u32, LeafNode)> {
+    let cm = CritMap { slab: pt, type_id: map_datatype(data_type), capacity: map_len(data_type) };
+    let res = cm.get_min();
+    match res {
+        None => None,
+        Some(res) => Some((res.0, res.1.clone())),
+    }
+}
+
+#[inline]
+fn map_max(pt: &mut SlabPageAlloc, data_type: DT) -> Option<(u32, LeafNode)> {
+    let cm = CritMap { slab: pt, type_id: map_datatype(data_type), capacity: map_len(data_type) };
+    let res = cm.get_max();
+    match res {
+        None => None,
+        Some(res) => Some((res.0, res.1.clone())),
+    }
+}
+
+#[inline]
 fn map_insert(pt: &mut SlabPageAlloc, data_type: DT, node: &LeafNode) -> FnResult<u32, SlabTreeError> {
     let mut cm = CritMap { slab: pt, type_id: map_datatype(data_type), capacity: map_len(data_type) };
     let res = cm.insert_leaf(node)?;
@@ -160,12 +170,6 @@ fn map_remove(pt: &mut SlabPageAlloc, data_type: DT, key: u128) -> FnResult<u32,
     let mut cm = CritMap { slab: pt, type_id: map_datatype(data_type), capacity: map_len(data_type) };
     let res = cm.remove_by_key(key).ok_or(SlabTreeError::NotFound)?;
     Ok(res.0)
-}
-
-#[inline]
-fn next_index(pt: &mut SlabPageAlloc, data_type: DT) -> u32 {
-    let svec = pt.header_mut::<SlabVec>(index_datatype(data_type));
-    svec.next_index()
 }
 
 #[inline]
@@ -185,6 +189,80 @@ fn verify_matching_accounts(left: &Pubkey, right: &Pubkey, error_msg: Option<Str
         }
         return Err(ErrorCode::InvalidAccount.into());
     }
+    Ok(())
+}
+
+fn log_settlement(
+    state: &mut MarketState, 
+    settle_a: &AccountInfo,
+    settle_b: &AccountInfo,
+    owner: &Pubkey,
+    mkt_token: bool,
+    amount: u64,
+) -> ProgramResult {
+    // TODO: use log B
+    msg!("Atellix: Log settlement - Owner: {} Amount: {}", owner.to_string(), amount.to_string());
+    if mkt_token {
+        msg!("Atellix: Market token settlement");
+    } else {
+        msg!("Atellix: Pricing token settlement");
+    }
+    let owner_key: u128 = CritMap::bytes_hash(owner.as_ref());
+    let log_data: &mut[u8] = &mut settle_a.try_borrow_mut_data()?;
+    let (_header, page_table) = mut_array_refs![log_data, size_of::<AccountsHeader>(); .. ;];
+    let sl = SlabPageAlloc::new(page_table);
+    let has_item = map_get(sl, DT::Account, owner_key);
+    if has_item.is_none() {
+        let new_item = map_insert(sl, DT::Account, &LeafNode::new(owner_key, owner));
+        if new_item.is_ok() {
+            let mut mkt_bal: u64 = 0;
+            let mut prc_bal: u64 = 0;
+            if mkt_token {
+                mkt_bal = amount;
+            } else {
+                prc_bal = amount;
+            }
+            let _acct = AccountEntry {
+                mkt_token_balance: mkt_bal,
+                prc_token_balance: prc_bal,
+            };
+            //*sl.index_mut::<AccountEntry>(SettleDT::Account.into(), new_item.unwrap() as usize) = acct;
+        } else {
+            // TODO: rollover to next log
+            msg!("Settlement log full");
+            return Err(ErrorCode::InternalError.into());
+        }
+    } else {
+        let log_item = has_item.unwrap();
+        let current_acct = sl.index::<AccountEntry>(SettleDT::Account.into(), log_item.0 as usize);
+        let mut mkt_bal: u64 = current_acct.mkt_token_balance;
+        let mut prc_bal: u64 = current_acct.prc_token_balance;
+        if mkt_token {
+            mkt_bal = mkt_bal.checked_add(amount).ok_or(ProgramError::from(ErrorCode::Overflow))?;
+        } else {
+            prc_bal = mkt_bal.checked_add(amount).ok_or(ProgramError::from(ErrorCode::Overflow))?;
+        }
+        let updated_acct = AccountEntry {
+            mkt_token_balance: mkt_bal,
+            prc_token_balance: prc_bal,
+        };
+        *sl.index_mut::<AccountEntry>(SettleDT::Account.into(), log_item.0 as usize) = updated_acct;
+    }
+
+    if mkt_token {
+        state.mkt_order_balance = state.mkt_order_balance.checked_sub(amount).ok_or(ProgramError::from(ErrorCode::Overflow))?;
+        msg!("Atellix: Market Token Vault Balance: {} (Orderbook: {})",
+            state.mkt_vault_balance.to_string(),
+            state.mkt_order_balance.to_string(),
+        );
+    } else {
+        state.prc_order_balance = state.prc_order_balance.checked_sub(amount).ok_or(ProgramError::from(ErrorCode::Overflow))?;
+        msg!("Atellix: Pricing Token Vault Balance: {} (Orderbook: {})",
+            state.prc_vault_balance.to_string(),
+            state.prc_order_balance.to_string(),
+        );
+    }
+
     Ok(())
 }
 
@@ -365,6 +443,8 @@ pub mod aqua_dex {
     pub fn limit_bid(ctx: Context<LimitOrder>,
         inp_quantity: u64,
         inp_price: u64,
+        inp_post: bool,     // Post the order order to the orderbook, otherwise it must be filled immediately
+        inp_fill: bool,     // Require orders that are not posted to be filled completely (ignored for posted orders)
     ) -> ProgramResult {
         let market = &ctx.accounts.market;
         let market_state = &ctx.accounts.state;
@@ -393,24 +473,76 @@ pub mod aqua_dex {
 
         msg!("Atellix: Limit Order Bid - Qty: {} @ Price: {}", inp_quantity.to_string(), inp_price.to_string());
 
-        // Check if order can be filled
-        let tokens_out = 0;
+        let tokens_in = inp_price * inp_quantity;
+        let state_upd = &mut ctx.accounts.state;
+        state_upd.prc_vault_balance = state_upd.prc_vault_balance.checked_add(tokens_in)
+            .ok_or(ProgramError::from(ErrorCode::Overflow))?;
+        state_upd.prc_order_balance = state_upd.prc_order_balance.checked_add(tokens_in)
+            .ok_or(ProgramError::from(ErrorCode::Overflow))?;
 
-        // Add order to orderbook
-        let order_id = Order::new_key(&mut ctx.accounts.state, Side::Bid, inp_price);
-        let order_node = LeafNode::new(order_id, &acc_user.key);
-        let order = Order { amount: inp_quantity };
         let orderbook_data: &mut[u8] = &mut acc_orders.try_borrow_mut_data()?;
         let ob = SlabPageAlloc::new(orderbook_data);
-        let entry = map_insert(ob, DT::BidOrder, &order_node);
-        if entry.is_err() {
-            // TODO: Evict orders if necessary
-            msg!("Failed to add order");
-            return Err(ErrorCode::InternalError.into());
-        } else {
-            *ob.index_mut::<Order>(OrderDT::BidOrder.into(), entry.unwrap() as usize) = order;
+
+        // Check if order can be filled
+        let mut tokens_filled = 0;
+        let mut tokens_paid;
+        loop {
+            let node_res = map_min(ob, DT::AskOrder);
+            if node_res.is_none() {
+                msg!("Atellix: No orders in orderbook");
+                break;
+            }
+            let node_spec = node_res.unwrap();
+            let posted_node = node_spec.1;
+            let posted_order = ob.index::<Order>(OrderDT::AskOrder as u16, node_spec.0 as usize);
+            let posted_qty = posted_order.amount;
+            let posted_price = Order::price(posted_node.key());
+            msg!("Atellix: Found Ask Order - Qty: {} @ Price: {}", posted_qty.to_string(), posted_price.to_string());
+            if posted_price <= inp_price {
+                // Fill order
+                if posted_qty == inp_quantity {         // Match the entire order
+                    break;
+                } else if posted_qty < inp_quantity {   // Match the entire order and continue
+                } else if posted_qty > inp_quantity {   // Match part of the order
+                    tokens_filled = inp_quantity;
+                    tokens_paid = inp_quantity * posted_price;
+                    let new_amount = posted_qty.checked_sub(inp_quantity).ok_or(ProgramError::from(ErrorCode::Overflow))?;
+                    ob.index_mut::<Order>(OrderDT::AskOrder as u16, node_spec.0 as usize).set_amount(new_amount);
+                    log_settlement(
+                        state_upd,
+                        acc_settle1,
+                        acc_settle2,
+                        &posted_node.owner(),
+                        false, // true = market token, false = pricing token
+                        tokens_paid,
+                    )?;
+                    break;
+                }
+            } else {
+                // Best price beyond limit price
+                break;
+            }
         }
-        msg!("Atellix: Posted order");
+
+        //msg!("Q: {} F: {}", inp_quantity.to_string(), tokens_filled.to_string());
+        let tokens_remaining = inp_quantity.checked_sub(tokens_filled).ok_or(ProgramError::from(ErrorCode::Overflow))?;
+        //msg!("R: {}", tokens_remaining.to_string());
+
+        // Add order to orderbook
+        if tokens_remaining > 0 && inp_post {
+            let order_id = Order::new_key(state_upd, Side::Bid, inp_price);
+            let order_node = LeafNode::new(order_id, &acc_user.key);
+            let order = Order { amount: tokens_remaining };
+            let entry = map_insert(ob, DT::BidOrder, &order_node);
+            if entry.is_err() {
+                // TODO: Evict orders if necessary
+                msg!("Failed to add order");
+                return Err(ErrorCode::InternalError.into());
+            } else {
+                *ob.index_mut::<Order>(OrderDT::BidOrder.into(), entry.unwrap() as usize) = order;
+            }
+            msg!("Atellix: Posted order");
+        }
 
         // TODO: Pay for settlement log space
 
@@ -422,14 +554,39 @@ pub mod aqua_dex {
         };
         let cpi_prog = ctx.accounts.spl_token_prog.clone();
         let in_ctx = CpiContext::new(cpi_prog, in_accounts);
-        token::transfer(in_ctx, inp_quantity)?;
-        let state_upd = &mut ctx.accounts.state;
-        state_upd.prc_vault_balance = state_upd.prc_vault_balance + inp_quantity;
-        state_upd.prc_order_balance = state_upd.prc_order_balance + inp_quantity;
-        msg!("Atellix: Pricing Vault Balance: {} (Orderbook: {})",
+        msg!("Atellix: Pricing Token Vault Deposit: {}", tokens_in.to_string());
+        msg!("Atellix: Pricing Token Vault Balance: {} (Orderbook: {})",
             state_upd.prc_vault_balance,
             state_upd.prc_order_balance,
         );
+        token::transfer(in_ctx, tokens_in)?;
+
+        if tokens_filled > 0 {
+            // Withdraw tokens from the vault
+            state_upd.mkt_vault_balance = state_upd.mkt_vault_balance.checked_sub(tokens_filled)
+                .ok_or(ProgramError::from(ErrorCode::Overflow))?;
+            state_upd.mkt_order_balance = state_upd.mkt_order_balance.checked_sub(tokens_filled)
+                .ok_or(ProgramError::from(ErrorCode::Overflow))?;
+
+            let seeds = &[
+                ctx.accounts.market.to_account_info().key.as_ref(),
+                &[market.agent_nonce],
+            ];
+            let signer = &[&seeds[..]];
+            let in_accounts = Transfer {
+                from: ctx.accounts.mkt_vault.to_account_info(),
+                to: ctx.accounts.user_mkt_token.to_account_info(),
+                authority: ctx.accounts.agent.to_account_info(),
+            };
+            let cpi_prog = ctx.accounts.spl_token_prog.clone();
+            let in_ctx = CpiContext::new_with_signer(cpi_prog, in_accounts, signer);
+            msg!("Atellix: Market Token Vault Withdraw: {}", tokens_filled.to_string());
+            msg!("Atellix: Market Token Vault Balance: {} (Orderbook: {})",
+                state_upd.mkt_vault_balance,
+                state_upd.mkt_order_balance,
+            );
+            token::transfer(in_ctx, tokens_filled)?;
+        }
     
         Ok(())
     }
@@ -465,10 +622,16 @@ pub mod aqua_dex {
 
         msg!("Atellix: Limit Order Ask - Qty: {} @ Price: {}", inp_quantity.to_string(), inp_price.to_string());
 
+        let state_upd = &mut ctx.accounts.state;
+        state_upd.mkt_vault_balance = state_upd.mkt_vault_balance.checked_add(inp_quantity)
+            .ok_or(ProgramError::from(ErrorCode::Overflow))?;
+        state_upd.mkt_order_balance = state_upd.mkt_order_balance.checked_add(inp_quantity)
+            .ok_or(ProgramError::from(ErrorCode::Overflow))?;
+
         // TODO: Check if order can be filled
 
         // Add order to orderbook
-        let order_id = Order::new_key(&mut ctx.accounts.state, Side::Ask, inp_price);
+        let order_id = Order::new_key(state_upd, Side::Ask, inp_price);
         let order_node = LeafNode::new(order_id, &acc_user.key);
         let order = Order { amount: inp_quantity };
         let orderbook_data: &mut[u8] = &mut acc_orders.try_borrow_mut_data()?;
@@ -493,14 +656,12 @@ pub mod aqua_dex {
         };
         let cpi_prog = ctx.accounts.spl_token_prog.clone();
         let in_ctx = CpiContext::new(cpi_prog, in_accounts);
-        token::transfer(in_ctx, inp_quantity)?;
-        let state_upd = &mut ctx.accounts.state;
-        state_upd.mkt_vault_balance = state_upd.mkt_vault_balance + inp_quantity;
-        state_upd.mkt_order_balance = state_upd.mkt_order_balance + inp_quantity;
-        msg!("Atellix: Market Vault Balance: {} (Orderbook: {})",
+        msg!("Atellix: Market Token Vault Deposit: {}", inp_quantity.to_string());
+        msg!("Atellix: Market Token Vault Balance: {} (Orderbook: {})",
             state_upd.mkt_vault_balance,
             state_upd.mkt_order_balance,
         );
+        token::transfer(in_ctx, inp_quantity)?;
     
         Ok(())
     }

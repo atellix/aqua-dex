@@ -813,6 +813,20 @@ impl CritMap<'_> {
     }
 
     #[inline]
+    pub fn get_min(&self) -> Option<(u32, &LeafNode)> {
+        let handle: NodeHandle = self.find_min()?;
+        let leaf: &LeafNode = self.get(handle).unwrap().as_leaf().unwrap();
+        Some((handle as u32, leaf))
+    }
+
+    #[inline]
+    pub fn get_max(&self) -> Option<(u32, &LeafNode)> {
+        let handle: NodeHandle = self.find_max()?;
+        let leaf: &LeafNode = self.get(handle).unwrap().as_leaf().unwrap();
+        Some((handle as u32, leaf))
+    }
+
+    #[inline]
     pub fn insert_leaf(
         &mut self,
         new_leaf: &LeafNode,
