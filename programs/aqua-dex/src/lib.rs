@@ -87,8 +87,7 @@ impl Order {
         (key >> 64) as u64
     }
 
-    #[inline]
-    fn next_index(pt: &mut SlabPageAlloc, data_type: DT) -> FnResult<u32, ProgramError> {
+    pub fn next_index(pt: &mut SlabPageAlloc, data_type: DT) -> FnResult<u32, ProgramError> {
         let svec = pt.header_mut::<SlabVec>(index_datatype(data_type));
         let free_top = svec.free_top();
         if free_top == 0 { // Empty free list
@@ -101,8 +100,7 @@ impl Order {
         Ok(free_index)
     }
 
-    #[inline]
-    fn free_index(pt: &mut SlabPageAlloc, data_type: DT, idx: u32) -> ProgramResult {
+    pub fn free_index(pt: &mut SlabPageAlloc, data_type: DT, idx: u32) -> ProgramResult {
         let free_top = pt.header::<SlabVec>(index_datatype(data_type)).free_top();
         pt.index_mut::<Order>(index_datatype(data_type), idx as usize).set_amount(free_top as u64);
         let new_top = idx.checked_add(1).ok_or(ProgramError::from(ErrorCode::Overflow))?;
@@ -130,6 +128,45 @@ pub struct AccountEntry {
 }
 unsafe impl Zeroable for AccountEntry {}
 unsafe impl Pod for AccountEntry {}
+
+impl AccountEntry {
+    pub fn mkt_token_balance(&self) -> u64 {
+        self.mkt_token_balance
+    }
+
+    pub fn prc_token_balance(&self) -> u64 {
+        self.prc_token_balance
+    }
+
+    pub fn set_mkt_token_balance(&mut self, bal: u64) {
+        self.mkt_token_balance = bal;
+    }
+
+    pub fn set_prc_token_balance(&mut self, bal: u64) {
+        self.prc_token_balance = bal;
+    }
+
+    fn next_index(pt: &mut SlabPageAlloc, data_type: DT) -> FnResult<u32, ProgramError> {
+        let svec = pt.header_mut::<SlabVec>(index_datatype(data_type));
+        let free_top = svec.free_top();
+        if free_top == 0 { // Empty free list
+            return Ok(svec.next_index());
+        }
+        let free_index = free_top.checked_sub(1).ok_or(ProgramError::from(ErrorCode::Overflow))?;
+        let index_act = pt.index::<AccountEntry>(index_datatype(data_type), free_index as usize);
+        let index_ptr = u32::try_from(index_act.mkt_token_balance()).expect("Invalid index");
+        pt.header_mut::<SlabVec>(index_datatype(data_type)).set_free_top(index_ptr);
+        Ok(free_index)
+    }
+
+    fn free_index(pt: &mut SlabPageAlloc, data_type: DT, idx: u32) -> ProgramResult {
+        let free_top = pt.header::<SlabVec>(index_datatype(data_type)).free_top();
+        pt.index_mut::<AccountEntry>(index_datatype(data_type), idx as usize).set_mkt_token_balance(free_top as u64);
+        let new_top = idx.checked_add(1).ok_or(ProgramError::from(ErrorCode::Overflow))?;
+        pt.header_mut::<SlabVec>(index_datatype(data_type)).set_free_top(new_top);
+        Ok(())
+    }
+}
 
 #[inline]
 fn map_datatype(data_type: DT) -> u16 {
@@ -246,9 +283,10 @@ fn log_settlement(
     let (_header, page_table) = mut_array_refs![log_data, size_of::<AccountsHeader>(); .. ;];
     let sl = SlabPageAlloc::new(page_table);
     let has_item = map_get(sl, DT::Account, owner_key);
-    /*if has_item.is_none() {
+    if has_item.is_none() {
         new_balance = amount;
-        let new_item = map_insert(sl, DT::Account, &LeafNode::new(owner_key, 0, owner));
+        let acct_idx = AccountEntry::next_index(sl, DT::Account)?;
+        let new_item = map_insert(sl, DT::Account, &LeafNode::new(owner_key, acct_idx, owner));
         if new_item.is_ok() {
             let mut mkt_bal: u64 = 0;
             let mut prc_bal: u64 = 0;
@@ -261,7 +299,7 @@ fn log_settlement(
                 mkt_token_balance: mkt_bal,
                 prc_token_balance: prc_bal,
             };
-            *sl.index_mut::<AccountEntry>(SettleDT::Account.into(), new_item.unwrap() as usize) = acct;
+            *sl.index_mut::<AccountEntry>(SettleDT::Account.into(), acct_idx as usize) = acct;
         } else {
             // TODO: rollover to next log
             msg!("Settlement log full");
@@ -274,17 +312,14 @@ fn log_settlement(
         let mut prc_bal: u64 = current_acct.prc_token_balance;
         if mkt_token {
             mkt_bal = mkt_bal.checked_add(amount).ok_or(ProgramError::from(ErrorCode::Overflow))?;
+            sl.index_mut::<AccountEntry>(SettleDT::Account.into(), 0 as usize).set_mkt_token_balance(mkt_bal);
             new_balance = mkt_bal;
         } else {
             prc_bal = prc_bal.checked_add(amount).ok_or(ProgramError::from(ErrorCode::Overflow))?;
+            sl.index_mut::<AccountEntry>(SettleDT::Account.into(), 0 as usize).set_prc_token_balance(prc_bal);
             new_balance = prc_bal;
         }
-        let updated_acct = AccountEntry {
-            mkt_token_balance: mkt_bal,
-            prc_token_balance: prc_bal,
-        };
-        *sl.index_mut::<AccountEntry>(SettleDT::Account.into(), 0 as usize) = updated_acct;
-    } */
+    }
 
     if mkt_token {
         msg!("Atellix: Settle Market Token - Amt: {} Bal: {} Key: {}", amount.to_string(), new_balance.to_string(), owner.to_string());
@@ -518,10 +553,8 @@ pub mod aqua_dex {
 
         let tokens_in = inp_price * inp_quantity;
         let state_upd = &mut ctx.accounts.state;
-        state_upd.prc_vault_balance = state_upd.prc_vault_balance.checked_add(tokens_in)
-            .ok_or(ProgramError::from(ErrorCode::Overflow))?;
-        state_upd.prc_order_balance = state_upd.prc_order_balance.checked_add(tokens_in)
-            .ok_or(ProgramError::from(ErrorCode::Overflow))?;
+        state_upd.prc_vault_balance = state_upd.prc_vault_balance.checked_add(tokens_in).ok_or(ProgramError::from(ErrorCode::Overflow))?;
+        state_upd.prc_order_balance = state_upd.prc_order_balance.checked_add(tokens_in).ok_or(ProgramError::from(ErrorCode::Overflow))?;
 
         let orderbook_data: &mut[u8] = &mut acc_orders.try_borrow_mut_data()?;
         let ob = SlabPageAlloc::new(orderbook_data);

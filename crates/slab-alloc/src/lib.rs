@@ -704,12 +704,10 @@ impl CritMapView<AnyNode> for CritMap<'_> {
 
         if header.free_list_len == 0 {
             if header.bump_index as usize == len {
-                msg!("Atellix: Error Length: {}", len.to_string());
                 return Err(());
             }
 
             if header.bump_index == std::u32::MAX as u64 {
-                msg!("Atellix: Error 2");
                 return Err(());
             }
             let key = header.bump_index as u32;
@@ -852,7 +850,6 @@ impl CritMap<'_> {
                         return Ok(None);
                     }
                     Err(()) => {
-                        msg!("Atellix: No space to create new root");
                         return Err(SlabTreeError::OutOfSpace)
                     },
                 }
@@ -889,7 +886,6 @@ impl CritMap<'_> {
 
             let new_leaf_res = self.insert(new_leaf.as_ref());
             if new_leaf_res.is_err() {
-                msg!("Atellix: No space to create new leaf 1");
                 return Err(SlabTreeError::OutOfSpace);
             }
             let new_leaf_handle = new_leaf_res.unwrap();
@@ -897,7 +893,6 @@ impl CritMap<'_> {
                 Ok(h) => h,
                 Err(()) => {
                     self.remove(new_leaf_handle).unwrap();
-                    msg!("Atellix: No space to create new leaf 2");
                     return Err(SlabTreeError::OutOfSpace);
                 }
             };
