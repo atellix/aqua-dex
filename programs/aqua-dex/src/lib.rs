@@ -288,16 +288,16 @@ fn log_settlement(
 
     if mkt_token {
         state.mkt_order_balance = state.mkt_order_balance.checked_sub(amount).ok_or(ProgramError::from(ErrorCode::Overflow))?;
-        msg!("Atellix: Market Token Vault Balance: {} (Orderbook: {})",
+        /*msg!("Atellix: Market Token Vault Balance: {} (Orderbook: {})",
             state.mkt_vault_balance.to_string(),
             state.mkt_order_balance.to_string(),
-        );
+        );*/
     } else {
         state.prc_order_balance = state.prc_order_balance.checked_sub(amount).ok_or(ProgramError::from(ErrorCode::Overflow))?;
-        msg!("Atellix: Pricing Token Vault Balance: {} (Orderbook: {})",
+        /*msg!("Atellix: Pricing Token Vault Balance: {} (Orderbook: {})",
             state.prc_vault_balance.to_string(),
             state.prc_order_balance.to_string(),
-        );
+        );*/
     }
 
     Ok(())
@@ -599,11 +599,11 @@ pub mod aqua_dex {
         };
         let cpi_prog = ctx.accounts.spl_token_prog.clone();
         let in_ctx = CpiContext::new(cpi_prog, in_accounts);
-        msg!("Atellix: Pricing Token Vault Deposit: {}", tokens_in.to_string());
+        /*msg!("Atellix: Pricing Token Vault Deposit: {}", tokens_in.to_string());
         msg!("Atellix: Pricing Token Vault Balance: {} (Orderbook: {})",
             state_upd.prc_vault_balance,
             state_upd.prc_order_balance,
-        );
+        );*/
         token::transfer(in_ctx, tokens_in)?;
 
         if tokens_filled > 0 {
@@ -625,11 +625,11 @@ pub mod aqua_dex {
             };
             let cpi_prog = ctx.accounts.spl_token_prog.clone();
             let in_ctx = CpiContext::new_with_signer(cpi_prog, in_accounts, signer);
-            msg!("Atellix: Market Token Vault Withdraw: {}", tokens_filled.to_string());
+            /*msg!("Atellix: Market Token Vault Withdraw: {}", tokens_filled.to_string());
             msg!("Atellix: Market Token Vault Balance: {} (Orderbook: {})",
                 state_upd.mkt_vault_balance,
                 state_upd.mkt_order_balance,
-            );
+            );*/
             token::transfer(in_ctx, tokens_filled)?;
         }
     
@@ -701,11 +701,11 @@ pub mod aqua_dex {
         };
         let cpi_prog = ctx.accounts.spl_token_prog.clone();
         let in_ctx = CpiContext::new(cpi_prog, in_accounts);
-        msg!("Atellix: Market Token Vault Deposit: {}", inp_quantity.to_string());
+        /*msg!("Atellix: Market Token Vault Deposit: {}", inp_quantity.to_string());
         msg!("Atellix: Market Token Vault Balance: {} (Orderbook: {})",
             state_upd.mkt_vault_balance,
             state_upd.mkt_order_balance,
-        );
+        );*/
         token::transfer(in_ctx, inp_quantity)?;
     
         Ok(())
