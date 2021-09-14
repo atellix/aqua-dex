@@ -15,8 +15,8 @@ use solana_program::{
 extern crate slab_alloc;
 use slab_alloc::{ SlabPageAlloc, CritMapHeader, CritMap, AnyNode, LeafNode, SlabVec, SlabTreeError };
 
-pub const MAX_ORDERS: u32 = 4;    // Max orders on each side of the orderbook
-pub const MAX_ACCOUNTS: u32 = 4;  // Max number of accounts per settlement data file
+pub const MAX_ORDERS: u32 = 16;    // Max orders on each side of the orderbook
+pub const MAX_ACCOUNTS: u32 = 16;  // Max number of accounts per settlement data file
 pub const SPL_TOKEN_PK: &str = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
 pub const ASC_TOKEN_PK: &str = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL";
 
@@ -194,8 +194,14 @@ fn map_max(pt: &mut SlabPageAlloc, data_type: DT) -> Option<LeafNode> {
 #[inline]
 fn map_insert(pt: &mut SlabPageAlloc, data_type: DT, node: &LeafNode) -> FnResult<(), SlabTreeError> {
     let mut cm = CritMap { slab: pt, type_id: map_datatype(data_type), capacity: map_len(data_type) };
-    let res = cm.insert_leaf(node)?;
-    Ok(())
+    let res = cm.insert_leaf(node);
+    match res {
+        Err(SlabTreeError::OutOfSpace) => {
+            msg!("Atellix: Out of space...");
+            return Err(SlabTreeError::OutOfSpace)
+        },
+        _  => Ok(())
+    }
 }
 
 #[inline]
@@ -523,7 +529,6 @@ pub mod aqua_dex {
         // Check if order can be filled
         let mut tokens_to_fill: u64 = inp_quantity;
         let mut tokens_filled: u64 = 0;
-        let mut tokens_paid: u64 = 0;
         loop {
             let node_res = map_min(ob, DT::AskOrder);
             if node_res.is_none() {
@@ -540,7 +545,6 @@ pub mod aqua_dex {
                 if posted_qty == tokens_to_fill {         // Match the entire order exactly
                     tokens_filled = tokens_filled.checked_add(tokens_to_fill).ok_or(ProgramError::from(ErrorCode::Overflow))?;
                     let tokens_part = tokens_to_fill.checked_mul(posted_price).ok_or(ProgramError::from(ErrorCode::Overflow))?;
-                    tokens_paid = tokens_paid.checked_add(tokens_part).ok_or(ProgramError::from(ErrorCode::Overflow))?;
                     msg!("Atellix: Filling - Qty: {} @ Price: {}", tokens_part.to_string(), posted_price.to_string());
                     map_remove(ob, DT::AskOrder, posted_node.key());
                     Order::free_index(ob, DT::AskOrder, posted_node.slot());
@@ -550,7 +554,6 @@ pub mod aqua_dex {
                     tokens_to_fill = tokens_to_fill.checked_sub(posted_qty).ok_or(ProgramError::from(ErrorCode::Overflow))?;
                     tokens_filled = tokens_filled.checked_add(posted_qty).ok_or(ProgramError::from(ErrorCode::Overflow))?;
                     let tokens_part = posted_qty.checked_mul(posted_price).ok_or(ProgramError::from(ErrorCode::Overflow))?;
-                    tokens_paid = tokens_paid.checked_add(tokens_part).ok_or(ProgramError::from(ErrorCode::Overflow))?;
                     msg!("Atellix: Filling - Qty: {} @ Price: {}", posted_qty.to_string(), posted_price.to_string());
                     map_remove(ob, DT::AskOrder, posted_node.key());
                     Order::free_index(ob, DT::AskOrder, posted_node.slot());
@@ -558,7 +561,6 @@ pub mod aqua_dex {
                 } else if posted_qty > tokens_to_fill {   // Match part of the order
                     tokens_filled = tokens_filled.checked_add(tokens_to_fill).ok_or(ProgramError::from(ErrorCode::Overflow))?;
                     let tokens_part = tokens_to_fill.checked_mul(posted_price).ok_or(ProgramError::from(ErrorCode::Overflow))?;
-                    tokens_paid = tokens_paid.checked_add(tokens_part).ok_or(ProgramError::from(ErrorCode::Overflow))?;
                     msg!("Atellix: Filling - Qty: {} @ Price: {}", tokens_to_fill.to_string(), posted_price.to_string());
                     let new_amount = posted_qty.checked_sub(tokens_to_fill).ok_or(ProgramError::from(ErrorCode::Overflow))?;
                     ob.index_mut::<Order>(OrderDT::AskOrder as u16, posted_node.slot() as usize).set_amount(new_amount);
