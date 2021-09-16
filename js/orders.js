@@ -159,38 +159,40 @@ async function main() {
                 }
             }
         )
+        res = await aquadex.account.tradeResult.fetch(resultData1.publicKey)
+        res.orderId = encodeOrderId(res.orderId)
+        console.log(res)
     }
-    res = await aquadex.account.tradeResult.fetch(resultData1.publicKey)
-    res.orderId = encodeOrderId(res.orderId)
-    console.log(res)
 
-    console.log('Limit Bid')
-    await aquadex.rpc.limitBid(
-        new anchor.BN(11 * 10000),  // Quantity
-        new anchor.BN(7 * 10000),   // Price
-        true,                       // Post order
-        false,                      // Require filled if not posted
-        {
-            accounts: {
-                market: marketPK,
-                state: marketStatePK,
-                agent: new PublicKey(marketAgent.pubkey),
-                user: provider.wallet.publicKey,
-                userMktToken: new PublicKey(userToken1.pubkey),
-                userPrcToken: new PublicKey(userToken2.pubkey),
-                mktVault: new PublicKey(tokenVault1.pubkey),
-                prcVault: new PublicKey(tokenVault2.pubkey),
-                orders: ordersPK,
-                settleA: settle1PK,
-                settleB: settle2PK,
-                result: resultData1.publicKey,
-                splTokenProg: TOKEN_PROGRAM_ID,
+    if (false) {
+        console.log('Limit Bid')
+        await aquadex.rpc.limitBid(
+            new anchor.BN(11 * 10000),  // Quantity
+            new anchor.BN(7 * 10000),   // Price
+            true,                       // Post order
+            false,                      // Require filled if not posted
+            {
+                accounts: {
+                    market: marketPK,
+                    state: marketStatePK,
+                    agent: new PublicKey(marketAgent.pubkey),
+                    user: provider.wallet.publicKey,
+                    userMktToken: new PublicKey(userToken1.pubkey),
+                    userPrcToken: new PublicKey(userToken2.pubkey),
+                    mktVault: new PublicKey(tokenVault1.pubkey),
+                    prcVault: new PublicKey(tokenVault2.pubkey),
+                    orders: ordersPK,
+                    settleA: settle1PK,
+                    settleB: settle2PK,
+                    result: resultData1.publicKey,
+                    splTokenProg: TOKEN_PROGRAM_ID,
+                }
             }
-        }
-    )
-    res = await aquadex.account.tradeResult.fetch(resultData1.publicKey)
-    res.orderId = encodeOrderId(res.orderId)
-    console.log(res)
+        )
+        res = await aquadex.account.tradeResult.fetch(resultData1.publicKey)
+        res.orderId = encodeOrderId(res.orderId)
+        console.log(res)
+    }
 }
 
 console.log('Begin')

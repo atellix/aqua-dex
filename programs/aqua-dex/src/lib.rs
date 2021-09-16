@@ -15,8 +15,9 @@ use solana_program::{
 extern crate slab_alloc;
 use slab_alloc::{ SlabPageAlloc, CritMapHeader, CritMap, AnyNode, LeafNode, SlabVec, SlabTreeError };
 
-pub const MAX_ORDERS: u32 = 16;    // Max orders on each side of the orderbook
-pub const MAX_ACCOUNTS: u32 = 16;  // Max number of accounts per settlement data file
+pub const MAX_ORDERS: u32 = 16;         // Max orders on each side of the orderbook
+pub const MAX_ACCOUNTS: u32 = 16;       // Max number of accounts per settlement data file
+pub const MAX_EVICTIONS: u32 = 10;      // Max number of orders to evict before aborting
 pub const SPL_TOKEN_PK: &str = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
 pub const ASC_TOKEN_PK: &str = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL";
 
@@ -253,7 +254,7 @@ fn map_insert(pt: &mut SlabPageAlloc, data_type: DT, node: &LeafNode) -> FnResul
     let res = cm.insert_leaf(node);
     match res {
         Err(SlabTreeError::OutOfSpace) => {
-            msg!("Atellix: Out of space...");
+            //msg!("Atellix: Out of space...");
             return Err(SlabTreeError::OutOfSpace)
         },
         _  => Ok(())
@@ -580,6 +581,7 @@ pub mod aqua_dex {
         // Check if order can be filled
         let mut tokens_to_fill: u64 = inp_quantity;
         let mut tokens_filled: u64 = 0;
+        let mut tokens_paid: u64 = 0;
         loop {
             let node_res = map_predicate_min(ob, DT::AskOrder, |sl, leaf| {
                 let valid = if leaf.owner() == *acc_user.key { false } else { true }; // Prevent trades between the same account
@@ -603,6 +605,7 @@ pub mod aqua_dex {
                 if posted_qty == tokens_to_fill {         // Match the entire order exactly
                     tokens_filled = tokens_filled.checked_add(tokens_to_fill).ok_or(ProgramError::from(ErrorCode::Overflow))?;
                     let tokens_part = tokens_to_fill.checked_mul(posted_price).ok_or(ProgramError::from(ErrorCode::Overflow))?;
+                    tokens_paid = tokens_paid.checked_add(tokens_part).ok_or(ProgramError::from(ErrorCode::Overflow))?;
                     msg!("Atellix: Filling - Qty: {} @ Price: {}", tokens_part.to_string(), posted_price.to_string());
                     map_remove(ob, DT::AskOrder, posted_node.key());
                     Order::free_index(ob, DT::AskOrder, posted_node.slot());
@@ -612,6 +615,7 @@ pub mod aqua_dex {
                     tokens_to_fill = tokens_to_fill.checked_sub(posted_qty).ok_or(ProgramError::from(ErrorCode::Overflow))?;
                     tokens_filled = tokens_filled.checked_add(posted_qty).ok_or(ProgramError::from(ErrorCode::Overflow))?;
                     let tokens_part = posted_qty.checked_mul(posted_price).ok_or(ProgramError::from(ErrorCode::Overflow))?;
+                    tokens_paid = tokens_paid.checked_add(tokens_part).ok_or(ProgramError::from(ErrorCode::Overflow))?;
                     msg!("Atellix: Filling - Qty: {} @ Price: {}", posted_qty.to_string(), posted_price.to_string());
                     map_remove(ob, DT::AskOrder, posted_node.key());
                     Order::free_index(ob, DT::AskOrder, posted_node.slot());
@@ -619,6 +623,7 @@ pub mod aqua_dex {
                 } else if posted_qty > tokens_to_fill {   // Match part of the order
                     tokens_filled = tokens_filled.checked_add(tokens_to_fill).ok_or(ProgramError::from(ErrorCode::Overflow))?;
                     let tokens_part = tokens_to_fill.checked_mul(posted_price).ok_or(ProgramError::from(ErrorCode::Overflow))?;
+                    tokens_paid = tokens_paid.checked_add(tokens_part).ok_or(ProgramError::from(ErrorCode::Overflow))?;
                     msg!("Atellix: Filling - Qty: {} @ Price: {}", tokens_to_fill.to_string(), posted_price.to_string());
                     let new_amount = posted_qty.checked_sub(tokens_to_fill).ok_or(ProgramError::from(ErrorCode::Overflow))?;
                     ob.index_mut::<Order>(OrderDT::AskOrder as u16, posted_node.slot() as usize).set_amount(new_amount);
@@ -640,19 +645,51 @@ pub mod aqua_dex {
             let order_idx = Order::next_index(ob, DT::BidOrder)?;
             let order_node = LeafNode::new(order_id, order_idx, &acc_user.key);
             let order = Order { amount: tokens_remaining };
-            let entry = map_insert(ob, DT::BidOrder, &order_node);
-            if entry.is_err() {
-                // TODO: Evict orders if necessary
-                msg!("Failed to add order");
-                return Err(ErrorCode::InternalError.into());
-            } else {
-                *ob.index_mut::<Order>(OrderDT::BidOrder.into(), order_idx as usize) = order;
+            let mut eviction_count: u32 = 0;
+            loop {
+                let entry = map_insert(ob, DT::BidOrder, &order_node);
+                if entry.is_err() {
+                    // Evict orders if necessary
+                    if eviction_count == MAX_EVICTIONS {
+                        msg!("Failed to add order");
+                        return Err(ErrorCode::InternalError.into());
+                    }
+                    let evict_node = map_min(ob, DT::BidOrder).unwrap();
+                    let evict_order = ob.index::<Order>(OrderDT::BidOrder as u16, evict_node.slot() as usize);
+                    // Only evict if the price is better
+                    if inp_price <= Order::price(evict_node.key()) {
+                        msg!("Atellix: Orderbook Full - Price Does Not Exceed Evicted Order");
+                        return Err(ErrorCode::OrderbookFull.into());
+                    }
+                    let evict_amount: u64 = evict_order.amount();
+                    msg!("Atellix: Evicting Order[{}] - Owner: {} Qty: {} Price: {}",
+                        evict_node.slot().to_string(),
+                        evict_node.owner().to_string(),
+                        evict_order.amount.to_string(),
+                        Order::price(evict_node.key()).to_string(),
+                    );
+                    let evict_total = evict_amount.checked_mul(Order::price(evict_node.key())).ok_or(ProgramError::from(ErrorCode::Overflow))?;
+                    log_settlement(state_upd, acc_settle1, acc_settle2, &evict_node.owner(), false, evict_total)?;
+                    map_remove(ob, DT::BidOrder, evict_node.key());
+                    Order::free_index(ob, DT::BidOrder, evict_node.slot());
+                    eviction_count = eviction_count + 1;
+                } else {
+                    *ob.index_mut::<Order>(OrderDT::BidOrder.into(), order_idx as usize) = order;
+                    break;
+                }
             }
+            let tokens_part = tokens_remaining.checked_mul(inp_price).ok_or(ProgramError::from(ErrorCode::Overflow))?;
+            tokens_paid = tokens_paid.checked_add(tokens_part).ok_or(ProgramError::from(ErrorCode::Overflow))?;
             result.set_tokens_posted(tokens_remaining);
             result.set_order_id(order_id);
             msg!("Atellix: Posted Order[{}] - Qty: {} @ Price: {}", order_idx.to_string(), tokens_remaining.to_string(), inp_price.to_string());
         }
         store_struct::<TradeResult>(&result, acc_result)?;
+        let discount = tokens_in.checked_sub(tokens_paid).ok_or(ProgramError::from(ErrorCode::Overflow))?;
+        msg!("Atellix: Discount: {}", discount.to_string());
+        let total_cost = tokens_in.checked_sub(discount).ok_or(ProgramError::from(ErrorCode::Overflow))?;
+        state_upd.prc_vault_balance = state_upd.prc_vault_balance.checked_sub(discount).ok_or(ProgramError::from(ErrorCode::Overflow))?;
+        state_upd.prc_order_balance = state_upd.prc_order_balance.checked_sub(discount).ok_or(ProgramError::from(ErrorCode::Overflow))?;
 
         // TODO: Pay for settlement log space
 
@@ -669,7 +706,7 @@ pub mod aqua_dex {
             state_upd.prc_vault_balance,
             state_upd.prc_order_balance,
         );*/
-        token::transfer(in_ctx, tokens_in)?;
+        token::transfer(in_ctx, total_cost)?;
 
         if tokens_filled > 0 {
             // Withdraw tokens from the vault
@@ -744,17 +781,18 @@ pub mod aqua_dex {
         // Check if order can be filled
         let mut tokens_to_fill: u64 = inp_quantity;
         let mut tokens_filled: u64 = 0;
+        let mut tokens_received: u64 = 0;
         loop {
             let node_res = map_predicate_max(ob, DT::BidOrder, |sl, leaf| {
                 let valid = if leaf.owner() == *acc_user.key { false } else { true }; // Prevent trades between the same account
-                /*let order = sl.index::<Order>(OrderDT::BidOrder as u16, leaf.slot() as usize);
+                let order = sl.index::<Order>(OrderDT::BidOrder as u16, leaf.slot() as usize);
                 msg!("Atellix: Found Order[{}] - Owner: {} Qty: {} Price: {} Valid: {}",
                     leaf.slot().to_string(), leaf.owner().to_string(), order.amount.to_string(), Order::price(leaf.key()).to_string(), valid.to_string()
-                );*/
+                );
                 valid
             });
             if node_res.is_none() {
-                msg!("Atellix: No Orders In Orderbook");
+                msg!("Atellix: No Matching Orders In Orderbook");
                 break;
             }
             let posted_node = node_res.unwrap();
@@ -767,26 +805,29 @@ pub mod aqua_dex {
                 if posted_qty == tokens_to_fill {         // Match the entire order exactly
                     tokens_filled = tokens_filled.checked_add(tokens_to_fill).ok_or(ProgramError::from(ErrorCode::Overflow))?;
                     let tokens_part = tokens_to_fill.checked_mul(posted_price).ok_or(ProgramError::from(ErrorCode::Overflow))?;
+                    tokens_received = tokens_received.checked_add(tokens_part).ok_or(ProgramError::from(ErrorCode::Overflow))?;
                     msg!("Atellix: Filling - Qty: {} @ Price: {}", tokens_part.to_string(), posted_price.to_string());
                     map_remove(ob, DT::BidOrder, posted_node.key());
                     Order::free_index(ob, DT::BidOrder, posted_node.slot());
-                    log_settlement(state_upd, acc_settle1, acc_settle2, &posted_node.owner(), true, tokens_part)?;
+                    log_settlement(state_upd, acc_settle1, acc_settle2, &posted_node.owner(), true, tokens_to_fill)?;
                     break;
                 } else if posted_qty < tokens_to_fill {   // Match the entire order and continue
                     tokens_to_fill = tokens_to_fill.checked_sub(posted_qty).ok_or(ProgramError::from(ErrorCode::Overflow))?;
                     tokens_filled = tokens_filled.checked_add(posted_qty).ok_or(ProgramError::from(ErrorCode::Overflow))?;
                     let tokens_part = posted_qty.checked_mul(posted_price).ok_or(ProgramError::from(ErrorCode::Overflow))?;
+                    tokens_received = tokens_received.checked_add(tokens_part).ok_or(ProgramError::from(ErrorCode::Overflow))?;
                     msg!("Atellix: Filling - Qty: {} @ Price: {}", posted_qty.to_string(), posted_price.to_string());
                     map_remove(ob, DT::BidOrder, posted_node.key());
                     Order::free_index(ob, DT::BidOrder, posted_node.slot());
-                    log_settlement(state_upd, acc_settle1, acc_settle2, &posted_node.owner(), true, tokens_part)?;
+                    log_settlement(state_upd, acc_settle1, acc_settle2, &posted_node.owner(), true, posted_qty)?;
                 } else if posted_qty > tokens_to_fill {   // Match part of the order
                     tokens_filled = tokens_filled.checked_add(tokens_to_fill).ok_or(ProgramError::from(ErrorCode::Overflow))?;
                     let tokens_part = tokens_to_fill.checked_mul(posted_price).ok_or(ProgramError::from(ErrorCode::Overflow))?;
+                    tokens_received = tokens_received.checked_add(tokens_part).ok_or(ProgramError::from(ErrorCode::Overflow))?;
                     msg!("Atellix: Filling - Qty: {} @ Price: {}", tokens_to_fill.to_string(), posted_price.to_string());
                     let new_amount = posted_qty.checked_sub(tokens_to_fill).ok_or(ProgramError::from(ErrorCode::Overflow))?;
                     ob.index_mut::<Order>(OrderDT::BidOrder as u16, posted_node.slot() as usize).set_amount(new_amount);
-                    log_settlement(state_upd, acc_settle1, acc_settle2, &posted_node.owner(), true, tokens_part)?;
+                    log_settlement(state_upd, acc_settle1, acc_settle2, &posted_node.owner(), true, tokens_to_fill)?;
                     break;
                 }
             } else {
@@ -805,13 +846,38 @@ pub mod aqua_dex {
             let order_idx = Order::next_index(ob, DT::AskOrder)?;
             let order_node = LeafNode::new(order_id, order_idx, &acc_user.key);
             let order = Order { amount: tokens_remaining };
-            let entry = map_insert(ob, DT::AskOrder, &order_node);
-            if entry.is_err() {
-                // TODO: Evict orders if necessary
-                msg!("Failed to add order");
-                return Err(ErrorCode::InternalError.into());
+            let mut eviction_count: u32 = 0;
+            loop {
+                let entry = map_insert(ob, DT::AskOrder, &order_node);
+                if entry.is_err() {
+                    // Evict orders if necessary
+                    if eviction_count == MAX_EVICTIONS {
+                        msg!("Failed to add order");
+                        return Err(ErrorCode::InternalError.into());
+                    }
+                    let evict_node = map_max(ob, DT::AskOrder).unwrap();
+                    let evict_order = ob.index::<Order>(OrderDT::AskOrder as u16, evict_node.slot() as usize);
+                    // Only evict if the price is better
+                    if inp_price >= Order::price(evict_node.key()) {
+                        msg!("Atellix: Orderbook Full - Price Is Not Below Evicted Order");
+                        return Err(ErrorCode::OrderbookFull.into());
+                    }
+                    let evict_amount: u64 = evict_order.amount();
+                    msg!("Atellix: Evicting Order[{}] - Owner: {} Qty: {} Price: {}",
+                        evict_node.slot().to_string(),
+                        evict_node.owner().to_string(),
+                        evict_order.amount.to_string(),
+                        Order::price(evict_node.key()).to_string(),
+                    );
+                    log_settlement(state_upd, acc_settle1, acc_settle2, &evict_node.owner(), true, evict_amount)?;
+                    map_remove(ob, DT::AskOrder, evict_node.key());
+                    Order::free_index(ob, DT::AskOrder, evict_node.slot());
+                    eviction_count = eviction_count + 1;
+                } else {
+                    *ob.index_mut::<Order>(OrderDT::AskOrder.into(), order_idx as usize) = order;
+                    break;
+                }
             }
-            *ob.index_mut::<Order>(OrderDT::AskOrder.into(), order_idx as usize) = order;
             result.set_tokens_posted(tokens_remaining);
             result.set_order_id(order_id);
             msg!("Atellix: Posted Order[{}] - Qty: {} @ Price: {}", order_idx.to_string(), inp_quantity.to_string(), inp_price.to_string());
@@ -837,8 +903,8 @@ pub mod aqua_dex {
 
         if tokens_filled > 0 {
             // Withdraw tokens from the vault
-            state_upd.prc_vault_balance = state_upd.prc_vault_balance.checked_sub(tokens_filled).ok_or(ProgramError::from(ErrorCode::Overflow))?;
-            state_upd.prc_order_balance = state_upd.prc_order_balance.checked_sub(tokens_filled).ok_or(ProgramError::from(ErrorCode::Overflow))?;
+            state_upd.prc_vault_balance = state_upd.prc_vault_balance.checked_sub(tokens_received).ok_or(ProgramError::from(ErrorCode::Overflow))?;
+            state_upd.prc_order_balance = state_upd.prc_order_balance.checked_sub(tokens_received).ok_or(ProgramError::from(ErrorCode::Overflow))?;
 
             let seeds = &[
                 ctx.accounts.market.to_account_info().key.as_ref(),
@@ -857,7 +923,7 @@ pub mod aqua_dex {
                 state_upd.prc_vault_balance,
                 state_upd.prc_order_balance,
             );*/
-            token::transfer(in_ctx, tokens_filled)?;
+            token::transfer(in_ctx, tokens_received)?;
         }
     
         Ok(())
@@ -1108,6 +1174,8 @@ pub enum ErrorCode {
     InternalError,
     #[msg("External error")]
     ExternalError,
+    #[msg("Orderbook full")]
+    OrderbookFull,
     #[msg("Settlement log account does not match market, please update market data and retry")]
     RetrySettlementAccount,
     #[msg("Overflow")]
