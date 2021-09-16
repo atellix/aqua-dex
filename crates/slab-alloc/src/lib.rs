@@ -926,8 +926,8 @@ impl CritMap<'_> {
             match node_ref.case().unwrap() {
                 NodeRef::Leaf(_) => break Some(node_ref.as_leaf().unwrap()),
                 NodeRef::Inner(inner) => {
-                    let crit_bit_mask = (1u128 << 127) >> node_prefix_len;
-                    let _search_key_crit_bit = (search_key & crit_bit_mask) != 0;
+                    //let crit_bit_mask = (1u128 << 127) >> node_prefix_len;
+                    //let _search_key_crit_bit = (search_key & crit_bit_mask) != 0;
                     node_handle = inner.walk_down(search_key).0;
                     continue;
                 }
@@ -948,13 +948,69 @@ impl CritMap<'_> {
             match node_ref.case().unwrap() {
                 NodeRef::Leaf(_) => break Some(node_handle),
                 NodeRef::Inner(inner) => {
-                    let crit_bit_mask = (1u128 << 127) >> node_prefix_len;
-                    let _search_key_crit_bit = (search_key & crit_bit_mask) != 0;
+                    //let crit_bit_mask = (1u128 << 127) >> node_prefix_len;
+                    //let _search_key_crit_bit = (search_key & crit_bit_mask) != 0;
                     node_handle = inner.walk_down(search_key).0;
                     continue;
                 }
             }
         }
+    }
+
+    fn branch_min_max(&self, start: NodeHandle, stack: &mut Vec<NodeHandle>, find_max: bool) -> NodeHandle {
+        let mut item = start;
+        loop {
+            let contents = self.get(item).unwrap();
+            match contents.case().unwrap() {
+                NodeRef::Inner(&InnerNode { children, .. }) => {
+                    item = children[if find_max { 1 } else { 0 }];
+                    stack.push(item);
+                    continue;
+                }
+                _ => return item,
+            }
+        }
+    }
+
+    fn predicate_min_max<F: Fn(&LeafNode) -> bool>(&self, predicate: F, find_max: bool) -> Option<&LeafNode> {
+        // Stack-based min/max search
+        let mut stack = Vec::new();
+        let mut root: NodeHandle = self.root()?;
+        stack.push(root);
+        // Populate stack
+        let mut found = self.branch_min_max(root, &mut stack, find_max);
+        loop {
+            // Check if top satisfies predicate
+            let node_ref = self.get(found).unwrap();
+            let leaf = node_ref.as_leaf().unwrap();
+            if predicate(leaf) {
+                return Some(leaf);
+            }
+            // If the stack is empty then nothing matched
+            if stack.len() == 0 {
+                return None;
+            }
+            // Otherwise backtrack up the stack, proceed down the other branch, and try again
+            let top = stack.pop().unwrap();
+            let contents = self.get(top).unwrap();
+            let other_branch = match contents.case().unwrap() {
+                NodeRef::Inner(&InnerNode { children, .. }) => {
+                    children[if find_max { 0 } else { 1 }] // Reversed to backtrack
+                }
+                _ => unreachable!(),
+            };
+            found = self.branch_min_max(other_branch, &mut stack, find_max); // Try the other branch, possibly adding to the stack
+        }
+    }
+
+    #[inline]
+    pub fn predicate_min<F: Fn(&LeafNode) -> bool>(&self, predicate: F) -> Option<&LeafNode> {
+        self.predicate_min_max(predicate, false)
+    }
+
+    #[inline]
+    pub fn predicate_max<F: Fn(&LeafNode) -> bool>(&self, predicate: F) -> Option<&LeafNode> {
+        self.predicate_min_max(predicate, true)
     }
 
     /* pub(crate) fn find_by<F: Fn(&LeafNode) -> bool>(

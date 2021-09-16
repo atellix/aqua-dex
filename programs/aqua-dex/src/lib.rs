@@ -112,10 +112,9 @@ impl Order {
 #[derive(Copy, Clone)]
 #[repr(packed)]
 pub struct AccountsHeader {
+    pub market: Pubkey,     // Market address
     pub prev: Pubkey,       // Prev settlement accounts file
     pub next: Pubkey,       // Next settlement accounts file
-    pub mkt_balance: u64,   // Market token balance within file
-    pub prc_balance: u64,   // Pricing token balance within file
 }
 unsafe impl Zeroable for AccountsHeader {}
 unsafe impl Pod for AccountsHeader {}
@@ -487,10 +486,9 @@ pub mod aqua_dex {
         let (settle1_top, settle1_pages) = mut_array_refs![settle1_data, size_of::<AccountsHeader>(); .. ;];
         let settle1_header: &mut [AccountsHeader] = cast_slice_mut(settle1_top);
         settle1_header[0] = AccountsHeader {
+            market: *acc_market.key,
             prev: Pubkey::default(),
             next: *acc_settle2.key,
-            mkt_balance: 0,
-            prc_balance: 0,
         };
         let settle1_slab = SlabPageAlloc::new(settle1_pages);
         settle1_slab.setup_page_table();
@@ -501,10 +499,9 @@ pub mod aqua_dex {
         let (settle2_top, settle2_pages) = mut_array_refs![settle2_data, size_of::<AccountsHeader>(); .. ;];
         let settle2_header: &mut [AccountsHeader] = cast_slice_mut(settle2_top);
         settle2_header[0] = AccountsHeader {
+            market: *acc_market.key,
             prev: *acc_settle2.key,
             next: Pubkey::default(),
-            mkt_balance: 0,
-            prc_balance: 0,
         };
         let settle2_slab = SlabPageAlloc::new(settle2_pages);
         settle2_slab.setup_page_table();
@@ -533,6 +530,7 @@ pub mod aqua_dex {
         let acc_orders = &ctx.accounts.orders.to_account_info();
         let acc_settle1 = &ctx.accounts.settle_a.to_account_info();
         let acc_settle2 = &ctx.accounts.settle_b.to_account_info();
+        let acc_result = &ctx.accounts.result.to_account_info();
 
         verify_matching_accounts(&market.state, &market_state.key(), Some(String::from("Invalid market state")))?;
         verify_matching_accounts(&market.agent, &acc_agent.key, Some(String::from("Invalid market agent")))?;
@@ -606,6 +604,8 @@ pub mod aqua_dex {
             }
         }
 
+        let mut result = TradeResult { tokens_filled: tokens_filled, tokens_posted: 0, order_id: 0 };
+
         // Add order to orderbook if not filled
         let tokens_remaining = inp_quantity.checked_sub(tokens_filled).ok_or(ProgramError::from(ErrorCode::Overflow))?;
         if tokens_remaining > 0 && inp_post {
@@ -621,8 +621,11 @@ pub mod aqua_dex {
             } else {
                 *ob.index_mut::<Order>(OrderDT::BidOrder.into(), order_idx as usize) = order;
             }
+            result.set_tokens_posted(tokens_remaining);
+            result.set_order_id(order_id);
             msg!("Atellix: Posted Order[{}] - Qty: {} @ Price: {}", order_idx.to_string(), tokens_remaining.to_string(), inp_price.to_string());
         }
+        store_struct::<TradeResult>(&result, acc_result)?;
 
         // TODO: Pay for settlement log space
 
@@ -684,6 +687,7 @@ pub mod aqua_dex {
         let acc_orders = &ctx.accounts.orders.to_account_info();
         let acc_settle1 = &ctx.accounts.settle_a.to_account_info();
         let acc_settle2 = &ctx.accounts.settle_b.to_account_info();
+        let acc_result = &ctx.accounts.result.to_account_info();
 
         verify_matching_accounts(&market.state, &market_state.key(), Some(String::from("Invalid market state")))?;
         verify_matching_accounts(&market.agent, &acc_agent.key, Some(String::from("Invalid market agent")))?;
@@ -707,7 +711,8 @@ pub mod aqua_dex {
         state_upd.mkt_vault_balance = state_upd.mkt_vault_balance.checked_add(inp_quantity).ok_or(ProgramError::from(ErrorCode::Overflow))?;
         state_upd.mkt_order_balance = state_upd.mkt_order_balance.checked_add(inp_quantity).ok_or(ProgramError::from(ErrorCode::Overflow))?;
 
-        // TODO: Check if order can be filled
+        let orderbook_data: &mut[u8] = &mut acc_orders.try_borrow_mut_data()?;
+        let ob = SlabPageAlloc::new(orderbook_data);
 
         // Check if order can be filled
         let mut tokens_to_fill: u64 = inp_quantity;
@@ -756,12 +761,12 @@ pub mod aqua_dex {
             }
         }
 
+        let mut result = TradeResult { tokens_filled: tokens_filled, tokens_posted: 0, order_id: 0 };
+
         // Add order to orderbook if not filled
         let tokens_remaining = inp_quantity.checked_sub(tokens_filled).ok_or(ProgramError::from(ErrorCode::Overflow))?;
         if tokens_remaining > 0 && inp_post {
             // Add order to orderbook
-            let orderbook_data: &mut[u8] = &mut acc_orders.try_borrow_mut_data()?;
-            let ob = SlabPageAlloc::new(orderbook_data);
             let order_id = Order::new_key(state_upd, Side::Ask, inp_price);
             let order_idx = Order::next_index(ob, DT::AskOrder)?;
             let order_node = LeafNode::new(order_id, order_idx, &acc_user.key);
@@ -773,8 +778,11 @@ pub mod aqua_dex {
                 return Err(ErrorCode::InternalError.into());
             }
             *ob.index_mut::<Order>(OrderDT::AskOrder.into(), order_idx as usize) = order;
+            result.set_tokens_posted(tokens_remaining);
+            result.set_order_id(order_id);
             msg!("Atellix: Posted Order[{}] - Qty: {} @ Price: {}", order_idx.to_string(), inp_quantity.to_string(), inp_price.to_string());
         }
+        store_struct::<TradeResult>(&result, acc_result)?;
 
         // TODO: Pay for settlement log space
 
@@ -827,11 +835,76 @@ pub mod aqua_dex {
         Ok(())
     }*/
 
-    /*pub fn withdraw(ctx: Context<Withdraw>,
-        inp_param: u64,
-    ) -> ProgramResult {
+    pub fn withdraw(ctx: Context<Withdraw>) -> ProgramResult {
+        let market = &ctx.accounts.market;
+        let state = &mut ctx.accounts.state;
+        let acc_agent = &ctx.accounts.agent.to_account_info();
+        let acc_user = &ctx.accounts.user.to_account_info();
+        let acc_mkt_vault = &ctx.accounts.mkt_vault.to_account_info();
+        let acc_prc_vault = &ctx.accounts.prc_vault.to_account_info();
+        let acc_settle = &ctx.accounts.settle.to_account_info();
+        let acc_result = &ctx.accounts.result.to_account_info();
+
+        // Verify 
+        verify_matching_accounts(&market.state, &state.key(), Some(String::from("Invalid market state")))?;
+        verify_matching_accounts(&market.agent, &acc_agent.key, Some(String::from("Invalid market agent")))?;
+        verify_matching_accounts(&market.mkt_vault, &acc_mkt_vault.key, Some(String::from("Invalid market token vault")))?;
+        verify_matching_accounts(&market.prc_vault, &acc_prc_vault.key, Some(String::from("Invalid pricing token vault")))?;
+
+        let owner_key: u128 = CritMap::bytes_hash(acc_user.key.as_ref());
+        let log_data: &mut[u8] = &mut acc_settle.try_borrow_mut_data()?;
+        let (header, page_table) = mut_array_refs![log_data, size_of::<AccountsHeader>(); .. ;];
+        let settle_header: &mut [AccountsHeader] = cast_slice_mut(header);
+        verify_matching_accounts(&settle_header[0].market, &market.key(), Some(String::from("Invalid market")))?;
+        let sl = SlabPageAlloc::new(page_table);
+        let has_item = map_get(sl, DT::Account, owner_key);
+        if has_item.is_some() {
+            let log_node = has_item.unwrap();
+            let log_entry = sl.index::<AccountEntry>(SettleDT::Account as u16, log_node.slot() as usize);
+            let seeds = &[
+                ctx.accounts.market.to_account_info().key.as_ref(),
+                &[market.agent_nonce],
+            ];
+            let signer = &[&seeds[..]];
+            let mut result = WithdrawResult { mkt_tokens: 0, prc_tokens: 0 };
+            if log_entry.mkt_token_balance() > 0 {
+                result.set_mkt_tokens(log_entry.mkt_token_balance());
+                let in_accounts = Transfer {
+                    from: ctx.accounts.mkt_vault.to_account_info(),
+                    to: ctx.accounts.user_mkt_token.to_account_info(),
+                    authority: ctx.accounts.agent.to_account_info(),
+                };
+                let cpi_prog = ctx.accounts.spl_token_prog.clone();
+                let in_ctx = CpiContext::new_with_signer(cpi_prog, in_accounts, signer);
+                token::transfer(in_ctx, log_entry.mkt_token_balance())?;
+                state.mkt_vault_balance = state.mkt_vault_balance.checked_sub(log_entry.mkt_token_balance())
+                    .ok_or(ProgramError::from(ErrorCode::Overflow))?;
+            }
+            if log_entry.prc_token_balance() > 0 {
+                result.set_prc_tokens(log_entry.prc_token_balance());
+                let in_accounts = Transfer {
+                    from: ctx.accounts.prc_vault.to_account_info(),
+                    to: ctx.accounts.user_prc_token.to_account_info(),
+                    authority: ctx.accounts.agent.to_account_info(),
+                };
+                let cpi_prog = ctx.accounts.spl_token_prog.clone();
+                let in_ctx = CpiContext::new_with_signer(cpi_prog, in_accounts, signer);
+                token::transfer(in_ctx, log_entry.prc_token_balance())?;
+                state.prc_vault_balance = state.prc_vault_balance.checked_sub(log_entry.prc_token_balance())
+                    .ok_or(ProgramError::from(ErrorCode::Overflow))?;
+            }
+            // Remove log entry
+            map_remove(sl, DT::Account, log_node.key());
+            AccountEntry::free_index(sl, DT::Account, log_node.slot());
+            // Write result
+            store_struct::<WithdrawResult>(&result, acc_result)?;
+        } else {
+            msg!("Account not found");
+            return Err(ErrorCode::AccountNotFound.into());
+        }
+
         Ok(())
-    }*/
+    }
 }
 
 #[derive(Accounts)]
@@ -887,6 +960,33 @@ pub struct LimitOrder<'info> {
     pub settle_a: AccountInfo<'info>,
     #[account(mut)]
     pub settle_b: AccountInfo<'info>,
+    #[account(mut)]
+    pub result: AccountInfo<'info>,
+    #[account(address = token::ID)]
+    pub spl_token_prog: AccountInfo<'info>,
+}
+
+#[derive(Accounts)]
+pub struct Withdraw<'info> {
+    #[account(mut)]
+    pub market: ProgramAccount<'info, Market>,
+    #[account(mut)]
+    pub state: ProgramAccount<'info, MarketState>,
+    pub agent: AccountInfo<'info>,
+    #[account(mut, signer)]
+    pub user: AccountInfo<'info>,
+    #[account(mut)]
+    pub user_mkt_token: AccountInfo<'info>,
+    #[account(mut)]
+    pub user_prc_token: AccountInfo<'info>,
+    #[account(mut)]
+    pub mkt_vault: AccountInfo<'info>,
+    #[account(mut)]
+    pub prc_vault: AccountInfo<'info>,
+    #[account(mut)]
+    pub settle: AccountInfo<'info>,
+    #[account(mut)]
+    pub result: AccountInfo<'info>,
     #[account(address = token::ID)]
     pub spl_token_prog: AccountInfo<'info>,
 }
@@ -923,10 +1023,47 @@ pub struct MarketState {
     pub last_ts: i64,                   // Timestamp of last event
 }
 
+#[account]
+pub struct TradeResult {
+    pub tokens_filled: u64,             // Received tokens
+    pub tokens_posted: u64,             // Posted tokens
+    pub order_id: u128,                 // Order ID
+}
+
+impl TradeResult {
+    pub fn set_tokens_filled(&mut self, new_amount: u64) {
+        self.tokens_filled = new_amount;
+    }
+
+    pub fn set_tokens_posted(&mut self, new_amount: u64) {
+        self.tokens_posted = new_amount;
+    }
+
+    pub fn set_order_id(&mut self, new_amount: u128) {
+        self.order_id = new_amount;
+    }
+}
+
+#[account]
+pub struct WithdrawResult {
+    pub mkt_tokens: u64,                // Market tokens
+    pub prc_tokens: u64,                // Pricing tokens
+}
+
+impl WithdrawResult {
+    pub fn set_mkt_tokens(&mut self, new_amount: u64) {
+        self.mkt_tokens = new_amount;
+    }
+
+    pub fn set_prc_tokens(&mut self, new_amount: u64) {
+        self.prc_tokens = new_amount;
+    }
+}
+
 #[error]
 pub enum ErrorCode {
-    #[msg("Access denied")]
-    AccessDenied,
+    #[msg("Account not found")]
+    AccountNotFound,
     #[msg("Invalid parameters")]
     InvalidParameters,
     #[msg("Invalid account")]
