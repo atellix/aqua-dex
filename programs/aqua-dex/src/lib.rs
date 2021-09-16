@@ -228,7 +228,7 @@ fn map_max(pt: &mut SlabPageAlloc, data_type: DT) -> Option<LeafNode> {
 }
 
 #[inline]
-fn map_predicate_min<F: Fn(&LeafNode) -> bool>(pt: &mut SlabPageAlloc, data_type: DT, predicate: F) -> Option<LeafNode> {
+fn map_predicate_min<F: Fn(&SlabPageAlloc, &LeafNode) -> bool>(pt: &mut SlabPageAlloc, data_type: DT, predicate: F) -> Option<LeafNode> {
     let cm = CritMap { slab: pt, type_id: map_datatype(data_type), capacity: map_len(data_type) };
     let res = cm.predicate_min(predicate);
     match res {
@@ -238,7 +238,7 @@ fn map_predicate_min<F: Fn(&LeafNode) -> bool>(pt: &mut SlabPageAlloc, data_type
 }
 
 #[inline]
-fn map_predicate_max<F: Fn(&LeafNode) -> bool>(pt: &mut SlabPageAlloc, data_type: DT, predicate: F) -> Option<LeafNode> {
+fn map_predicate_max<F: Fn(&SlabPageAlloc, &LeafNode) -> bool>(pt: &mut SlabPageAlloc, data_type: DT, predicate: F) -> Option<LeafNode> {
     let cm = CritMap { slab: pt, type_id: map_datatype(data_type), capacity: map_len(data_type) };
     let res = cm.predicate_max(predicate);
     match res {
@@ -581,9 +581,12 @@ pub mod aqua_dex {
         let mut tokens_to_fill: u64 = inp_quantity;
         let mut tokens_filled: u64 = 0;
         loop {
-            let node_res = map_predicate_min(ob, DT::AskOrder, |leaf| {
+            let node_res = map_predicate_min(ob, DT::AskOrder, |sl, leaf| {
                 let valid = if leaf.owner() == *acc_user.key { false } else { true }; // Prevent trades between the same account
-                msg!("Atellix: Found Order[{}] - Owner: {} - Valid: {}", leaf.slot().to_string(), leaf.owner().to_string(), valid.to_string());
+                let order = sl.index::<Order>(OrderDT::AskOrder as u16, leaf.slot() as usize);
+                msg!("Atellix: Found Order[{}] - Owner: {} Qty: {} Price: {} Valid: {}",
+                    leaf.slot().to_string(), leaf.owner().to_string(), order.amount.to_string(), Order::price(leaf.key()).to_string(), valid.to_string()
+                );
                 valid
             });
             if node_res.is_none() {
@@ -742,9 +745,12 @@ pub mod aqua_dex {
         let mut tokens_to_fill: u64 = inp_quantity;
         let mut tokens_filled: u64 = 0;
         loop {
-            let node_res = map_predicate_max(ob, DT::BidOrder, |leaf| {
+            let node_res = map_predicate_max(ob, DT::BidOrder, |sl, leaf| {
                 let valid = if leaf.owner() == *acc_user.key { false } else { true }; // Prevent trades between the same account
-                msg!("Atellix: Found Order[{}] - Owner: {} - Valid: {}", leaf.slot().to_string(), leaf.owner().to_string(), valid.to_string());
+                /*let order = sl.index::<Order>(OrderDT::BidOrder as u16, leaf.slot() as usize);
+                msg!("Atellix: Found Order[{}] - Owner: {} Qty: {} Price: {} Valid: {}",
+                    leaf.slot().to_string(), leaf.owner().to_string(), order.amount.to_string(), Order::price(leaf.key()).to_string(), valid.to_string()
+                );*/
                 valid
             });
             if node_res.is_none() {

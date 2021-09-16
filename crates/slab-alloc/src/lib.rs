@@ -972,17 +972,20 @@ impl CritMap<'_> {
         }
     }
 
-    fn predicate_min_max<F: Fn(&LeafNode) -> bool>(&self, predicate: F, find_max: bool) -> Option<&LeafNode> {
+    fn predicate_min_max<F: Fn(&SlabPageAlloc, &LeafNode) -> bool>(&self,
+        predicate: F,
+        find_max: bool,
+    ) -> Option<&LeafNode> {
         // Stack-based min/max search
         let mut stack = Vec::new();
-        let mut root: NodeHandle = self.root()?;
+        let root: NodeHandle = self.root()?;
         // Populate stack
         let mut found = self.branch_min_max(root, &mut stack, find_max);
         loop {
             // Check if top satisfies predicate
             let node_ref = self.get(found).unwrap();
             let leaf = node_ref.as_leaf().unwrap();
-            if predicate(leaf) {
+            if predicate(self.slab, leaf) {
                 return Some(leaf);
             }
             // If the stack is empty then nothing matched
@@ -995,7 +998,7 @@ impl CritMap<'_> {
             found = match contents.case().unwrap() {
                 NodeRef::Inner(&InnerNode { children, .. }) => {
                     let other_branch = children[if find_max { 0 } else { 1 }]; // Reversed to backtrack
-                    self.branch_min_max(other_branch, &mut stack, find_max) // Try the other branch, possibly adding to the stack
+                    self.branch_min_max(other_branch, &mut stack, find_max) // Try the other branch
                 },
                 _ => unreachable!(),
             };
@@ -1003,12 +1006,12 @@ impl CritMap<'_> {
     }
 
     #[inline]
-    pub fn predicate_min<F: Fn(&LeafNode) -> bool>(&self, predicate: F) -> Option<&LeafNode> {
+    pub fn predicate_min<F: Fn(&SlabPageAlloc, &LeafNode) -> bool>(&self, predicate: F) -> Option<&LeafNode> {
         self.predicate_min_max(predicate, false)
     }
 
     #[inline]
-    pub fn predicate_max<F: Fn(&LeafNode) -> bool>(&self, predicate: F) -> Option<&LeafNode> {
+    pub fn predicate_max<F: Fn(&SlabPageAlloc, &LeafNode) -> bool>(&self, predicate: F) -> Option<&LeafNode> {
         self.predicate_min_max(predicate, true)
     }
 
