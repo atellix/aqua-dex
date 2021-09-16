@@ -963,8 +963,8 @@ impl CritMap<'_> {
             let contents = self.get(item).unwrap();
             match contents.case().unwrap() {
                 NodeRef::Inner(&InnerNode { children, .. }) => {
-                    item = children[if find_max { 1 } else { 0 }];
                     stack.push(item);
+                    item = children[if find_max { 1 } else { 0 }];
                     continue;
                 }
                 _ => return item,
@@ -976,7 +976,6 @@ impl CritMap<'_> {
         // Stack-based min/max search
         let mut stack = Vec::new();
         let mut root: NodeHandle = self.root()?;
-        stack.push(root);
         // Populate stack
         let mut found = self.branch_min_max(root, &mut stack, find_max);
         loop {
@@ -993,13 +992,13 @@ impl CritMap<'_> {
             // Otherwise backtrack up the stack, proceed down the other branch, and try again
             let top = stack.pop().unwrap();
             let contents = self.get(top).unwrap();
-            let other_branch = match contents.case().unwrap() {
+            found = match contents.case().unwrap() {
                 NodeRef::Inner(&InnerNode { children, .. }) => {
-                    children[if find_max { 0 } else { 1 }] // Reversed to backtrack
-                }
+                    let other_branch = children[if find_max { 0 } else { 1 }]; // Reversed to backtrack
+                    self.branch_min_max(other_branch, &mut stack, find_max) // Try the other branch, possibly adding to the stack
+                },
                 _ => unreachable!(),
             };
-            found = self.branch_min_max(other_branch, &mut stack, find_max); // Try the other branch, possibly adding to the stack
         }
     }
 

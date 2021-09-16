@@ -49,8 +49,10 @@ async function createTokenMint() {
 }
 
 async function main() {
-    var mint1 = await createTokenMint()
-    var mint2 = await createTokenMint()
+    //var mint1 = await createTokenMint()
+    //var mint2 = await createTokenMint()
+    var mint1 = '3sd64AZF5fAC83i7wJ44Jxo145J6oE9fT2of6MtBjBeK'
+    var mint2 = '3dkM9fyZ6AADz4SZLWh29rgrdwsLwKgubyM74wJzLdBs'
     console.log("Mints: " + mint1 + " " + mint2)
     const tokenMint1 = new PublicKey(mint1)
     const tokenMint2 = new PublicKey(mint2)
