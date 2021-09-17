@@ -1,13 +1,12 @@
 use std::{ io::Cursor, string::String, str::FromStr, result::Result as FnResult, mem::size_of, convert::TryFrom };
 use bytemuck::{ Pod, Zeroable, cast_slice_mut };
-use byte_slice_cast::*;
 use num_enum::{ TryFromPrimitive, IntoPrimitive };
-use arrayref::{ array_refs, mut_array_refs };
+use arrayref::{ mut_array_refs };
 use anchor_lang::prelude::*;
 use anchor_spl::token::{ self, Transfer };
 use solana_program::{
-    sysvar, system_instruction, system_program,
-    program::{ invoke, invoke_signed },
+    sysvar, system_program,
+    program::{ invoke },
     account_info::AccountInfo,
     instruction::{ AccountMeta, Instruction }
 };
@@ -22,10 +21,10 @@ pub const SPL_TOKEN_PK: &str = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
 pub const ASC_TOKEN_PK: &str = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL";
 
 #[repr(u8)]
-#[derive(PartialEq, Debug, Eq, Copy, Clone)]
+#[derive(PartialEq, Debug, Eq, Copy, Clone, TryFromPrimitive)]
 pub enum Side {
-    Bid,
-    Ask,
+    Bid = 0,
+    Ask = 1,
 }
 
 #[repr(u16)]
@@ -264,7 +263,7 @@ fn map_insert(pt: &mut SlabPageAlloc, data_type: DT, node: &LeafNode) -> FnResul
 #[inline]
 fn map_remove(pt: &mut SlabPageAlloc, data_type: DT, key: u128) -> FnResult<(), SlabTreeError> {
     let mut cm = CritMap { slab: pt, type_id: map_datatype(data_type), capacity: map_len(data_type) };
-    let res = cm.remove_by_key(key).ok_or(SlabTreeError::NotFound)?;
+    cm.remove_by_key(key).ok_or(SlabTreeError::NotFound)?;
     Ok(())
 }
 
@@ -298,7 +297,7 @@ fn log_settlement(
 ) -> ProgramResult {
     // TODO: use log B
     let owner_key: u128 = CritMap::bytes_hash(owner.as_ref());
-    let mut new_balance: u64 = amount; // Fix
+    let new_balance: u64;
     let log_data: &mut[u8] = &mut settle_a.try_borrow_mut_data()?;
     let (_header, page_table) = mut_array_refs![log_data, size_of::<AccountsHeader>(); .. ;];
     let sl = SlabPageAlloc::new(page_table);
@@ -327,16 +326,16 @@ fn log_settlement(
         }
     } else {
         let log_item = has_item.unwrap();
-        let current_acct = sl.index::<AccountEntry>(SettleDT::Account.into(), 0 as usize);
+        let current_acct = sl.index::<AccountEntry>(SettleDT::Account.into(), log_item.slot() as usize);
         let mut mkt_bal: u64 = current_acct.mkt_token_balance;
         let mut prc_bal: u64 = current_acct.prc_token_balance;
         if mkt_token {
             mkt_bal = mkt_bal.checked_add(amount).ok_or(ProgramError::from(ErrorCode::Overflow))?;
-            sl.index_mut::<AccountEntry>(SettleDT::Account.into(), 0 as usize).set_mkt_token_balance(mkt_bal);
+            sl.index_mut::<AccountEntry>(SettleDT::Account.into(), log_item.slot() as usize).set_mkt_token_balance(mkt_bal);
             new_balance = mkt_bal;
         } else {
             prc_bal = prc_bal.checked_add(amount).ok_or(ProgramError::from(ErrorCode::Overflow))?;
-            sl.index_mut::<AccountEntry>(SettleDT::Account.into(), 0 as usize).set_prc_token_balance(prc_bal);
+            sl.index_mut::<AccountEntry>(SettleDT::Account.into(), log_item.slot() as usize).set_prc_token_balance(prc_bal);
             new_balance = prc_bal;
         }
     }
@@ -587,9 +586,10 @@ pub mod aqua_dex {
                 let valid = if leaf.owner() == *acc_user.key { false } else { true }; // Prevent trades between the same account
                 let order = sl.index::<Order>(OrderDT::AskOrder as u16, leaf.slot() as usize);
                 msg!("Atellix: Found Order[{}] - Owner: {} Qty: {} Price: {} Valid: {}",
-                    leaf.slot().to_string(), leaf.owner().to_string(), order.amount.to_string(), Order::price(leaf.key()).to_string(), valid.to_string()
+                    leaf.slot().to_string(), leaf.owner().to_string(), order.amount().to_string(), Order::price(leaf.key()).to_string(), valid.to_string()
                 );
-                valid
+                //valid
+                true
             });
             if node_res.is_none() {
                 msg!("Atellix: No Matching Orders In Orderbook");
@@ -636,7 +636,7 @@ pub mod aqua_dex {
             }
         }
 
-        let mut result = TradeResult { tokens_filled: tokens_filled, tokens_posted: 0, order_id: 0 };
+        let mut result = TradeResult { tokens_filled: tokens_filled, tokens_posted: 0, tokens_deposited: 0, order_id: 0 };
 
         // Add order to orderbook if not filled
         let tokens_remaining = inp_quantity.checked_sub(tokens_filled).ok_or(ProgramError::from(ErrorCode::Overflow))?;
@@ -665,7 +665,7 @@ pub mod aqua_dex {
                     msg!("Atellix: Evicting Order[{}] - Owner: {} Qty: {} Price: {}",
                         evict_node.slot().to_string(),
                         evict_node.owner().to_string(),
-                        evict_order.amount.to_string(),
+                        evict_order.amount().to_string(),
                         Order::price(evict_node.key()).to_string(),
                     );
                     let evict_total = evict_amount.checked_mul(Order::price(evict_node.key())).ok_or(ProgramError::from(ErrorCode::Overflow))?;
@@ -684,7 +684,6 @@ pub mod aqua_dex {
             result.set_order_id(order_id);
             msg!("Atellix: Posted Order[{}] - Qty: {} @ Price: {}", order_idx.to_string(), tokens_remaining.to_string(), inp_price.to_string());
         }
-        store_struct::<TradeResult>(&result, acc_result)?;
         let discount = tokens_in.checked_sub(tokens_paid).ok_or(ProgramError::from(ErrorCode::Overflow))?;
         msg!("Atellix: Discount: {}", discount.to_string());
         let total_cost = tokens_in.checked_sub(discount).ok_or(ProgramError::from(ErrorCode::Overflow))?;
@@ -707,6 +706,7 @@ pub mod aqua_dex {
             state_upd.prc_order_balance,
         );*/
         token::transfer(in_ctx, total_cost)?;
+        result.set_tokens_deposited(total_cost);
 
         if tokens_filled > 0 {
             // Withdraw tokens from the vault
@@ -732,7 +732,7 @@ pub mod aqua_dex {
             );*/
             token::transfer(in_ctx, tokens_filled)?;
         }
-    
+        store_struct::<TradeResult>(&result, acc_result)?;
         Ok(())
     }
 
@@ -770,7 +770,6 @@ pub mod aqua_dex {
 
         msg!("Atellix: Limit Order Ask - Qty: {} @ Price: {}", inp_quantity.to_string(), inp_price.to_string());
 
-        let tokens_in = inp_quantity;
         let state_upd = &mut ctx.accounts.state;
         state_upd.mkt_vault_balance = state_upd.mkt_vault_balance.checked_add(inp_quantity).ok_or(ProgramError::from(ErrorCode::Overflow))?;
         state_upd.mkt_order_balance = state_upd.mkt_order_balance.checked_add(inp_quantity).ok_or(ProgramError::from(ErrorCode::Overflow))?;
@@ -787,9 +786,10 @@ pub mod aqua_dex {
                 let valid = if leaf.owner() == *acc_user.key { false } else { true }; // Prevent trades between the same account
                 let order = sl.index::<Order>(OrderDT::BidOrder as u16, leaf.slot() as usize);
                 msg!("Atellix: Found Order[{}] - Owner: {} Qty: {} Price: {} Valid: {}",
-                    leaf.slot().to_string(), leaf.owner().to_string(), order.amount.to_string(), Order::price(leaf.key()).to_string(), valid.to_string()
+                    leaf.slot().to_string(), leaf.owner().to_string(), order.amount().to_string(), Order::price(leaf.key()).to_string(), valid.to_string()
                 );
-                valid
+                //valid
+                true
             });
             if node_res.is_none() {
                 msg!("Atellix: No Matching Orders In Orderbook");
@@ -836,7 +836,7 @@ pub mod aqua_dex {
             }
         }
 
-        let mut result = TradeResult { tokens_filled: tokens_filled, tokens_posted: 0, order_id: 0 };
+        let mut result = TradeResult { tokens_filled: tokens_filled, tokens_posted: 0, tokens_deposited: 0, order_id: 0 };
 
         // Add order to orderbook if not filled
         let tokens_remaining = inp_quantity.checked_sub(tokens_filled).ok_or(ProgramError::from(ErrorCode::Overflow))?;
@@ -866,7 +866,7 @@ pub mod aqua_dex {
                     msg!("Atellix: Evicting Order[{}] - Owner: {} Qty: {} Price: {}",
                         evict_node.slot().to_string(),
                         evict_node.owner().to_string(),
-                        evict_order.amount.to_string(),
+                        evict_order.amount().to_string(),
                         Order::price(evict_node.key()).to_string(),
                     );
                     log_settlement(state_upd, acc_settle1, acc_settle2, &evict_node.owner(), true, evict_amount)?;
@@ -882,7 +882,6 @@ pub mod aqua_dex {
             result.set_order_id(order_id);
             msg!("Atellix: Posted Order[{}] - Qty: {} @ Price: {}", order_idx.to_string(), inp_quantity.to_string(), inp_price.to_string());
         }
-        store_struct::<TradeResult>(&result, acc_result)?;
 
         // TODO: Pay for settlement log space
 
@@ -900,6 +899,7 @@ pub mod aqua_dex {
             state_upd.mkt_order_balance,
         );*/
         token::transfer(in_ctx, inp_quantity)?;
+        result.set_tokens_deposited(inp_quantity);
 
         if tokens_filled > 0 {
             // Withdraw tokens from the vault
@@ -925,15 +925,94 @@ pub mod aqua_dex {
             );*/
             token::transfer(in_ctx, tokens_received)?;
         }
-    
+        store_struct::<TradeResult>(&result, acc_result)?;
         Ok(())
     }
 
-    /*pub fn cancel_order(ctx: Context<CancelOrder>,
-        inp_param: u64,
+    pub fn cancel_order(ctx: Context<CancelOrder>,
+        inp_side: u8,               // 0 - Bid, 1 - Ask
+        inp_order_id: u128,
     ) -> ProgramResult {
+        let market = &ctx.accounts.market;
+        let market_state = &ctx.accounts.state;
+        let acc_agent = &ctx.accounts.agent.to_account_info();
+        let acc_user = &ctx.accounts.user.to_account_info();
+        let acc_mkt_vault = &ctx.accounts.mkt_vault.to_account_info();
+        let acc_prc_vault = &ctx.accounts.prc_vault.to_account_info();
+        let acc_orders = &ctx.accounts.orders.to_account_info();
+        let acc_result = &ctx.accounts.result.to_account_info();
+
+        verify_matching_accounts(&market.state, &market_state.key(), Some(String::from("Invalid market state")))?;
+        verify_matching_accounts(&market.agent, &acc_agent.key, Some(String::from("Invalid market agent")))?;
+        verify_matching_accounts(&market.mkt_vault, &acc_mkt_vault.key, Some(String::from("Invalid market token vault")))?;
+        verify_matching_accounts(&market.prc_vault, &acc_prc_vault.key, Some(String::from("Invalid pricing token vault")))?;
+        verify_matching_accounts(&market.orders, &acc_orders.key, Some(String::from("Invalid orderbook")))?;
+
+        let side = Side::try_from(inp_side).or(Err(ProgramError::from(ErrorCode::InvalidParameters)))?;
+        let order_data: &mut[u8] = &mut acc_orders.try_borrow_mut_data()?;
+        let sl = SlabPageAlloc::new(order_data);
+        let order_type = match side {
+            Side::Bid => DT::BidOrder,
+            Side::Ask => DT::AskOrder,
+        };
+        let item = map_get(sl, order_type, inp_order_id);
+        if item.is_none() {
+            msg!("Order not found");
+            return Err(ErrorCode::OrderNotFound.into());
+        }
+        let leaf = item.unwrap();
+        if leaf.owner() != *acc_user.key {
+            msg!("Order not owned by user");
+            return Err(ErrorCode::AccessDenied.into());
+        }
+        let order = sl.index::<Order>(index_datatype(order_type), leaf.slot() as usize);
+        let state = &mut ctx.accounts.state;
+        let mut result = WithdrawResult { mkt_tokens: 0, prc_tokens: 0 };
+        let tokens_out = match side {
+            Side::Bid => {
+                let total_res = order.amount().checked_mul(Order::price(leaf.key()));
+                if total_res.is_none() {
+                    return Err(ErrorCode::Overflow.into());
+                }
+                let total = total_res.unwrap();
+                result.set_prc_tokens(total);
+                state.prc_vault_balance = state.prc_vault_balance.checked_sub(total).ok_or(ProgramError::from(ErrorCode::Overflow))?;
+                state.prc_order_balance = state.prc_order_balance.checked_sub(total).ok_or(ProgramError::from(ErrorCode::Overflow))?;
+                total
+            },
+            Side::Ask => {
+                let total = order.amount();
+                result.set_mkt_tokens(total);
+                state.mkt_vault_balance = state.mkt_vault_balance.checked_sub(total).ok_or(ProgramError::from(ErrorCode::Overflow))?;
+                state.mkt_order_balance = state.mkt_order_balance.checked_sub(total).ok_or(ProgramError::from(ErrorCode::Overflow))?;
+                total
+            }
+        };
+        map_remove(sl, order_type, leaf.key());
+        Order::free_index(sl, order_type, leaf.slot());
+        let in_accounts = match side {
+            Side::Bid => Transfer {
+                from: ctx.accounts.prc_vault.to_account_info(),
+                to: ctx.accounts.user_prc_token.to_account_info(),
+                authority: ctx.accounts.agent.to_account_info(),
+            },
+            Side::Ask => Transfer {
+                from: ctx.accounts.mkt_vault.to_account_info(),
+                to: ctx.accounts.user_mkt_token.to_account_info(),
+                authority: ctx.accounts.agent.to_account_info(),
+            },
+        };
+        let seeds = &[
+            ctx.accounts.market.to_account_info().key.as_ref(),
+            &[market.agent_nonce],
+        ];
+        let signer = &[&seeds[..]];
+        let cpi_prog = ctx.accounts.spl_token_prog.clone();
+        let in_ctx = CpiContext::new_with_signer(cpi_prog, in_accounts, signer);
+        token::transfer(in_ctx, tokens_out)?;
+        store_struct::<WithdrawResult>(&result, acc_result)?;
         Ok(())
-    }*/
+    }
 
     pub fn withdraw(ctx: Context<Withdraw>) -> ProgramResult {
         let market = &ctx.accounts.market;
@@ -1067,6 +1146,31 @@ pub struct LimitOrder<'info> {
 }
 
 #[derive(Accounts)]
+pub struct CancelOrder<'info> {
+    #[account(mut)]
+    pub market: ProgramAccount<'info, Market>,
+    #[account(mut)]
+    pub state: ProgramAccount<'info, MarketState>,
+    pub agent: AccountInfo<'info>,
+    #[account(mut, signer)]
+    pub user: AccountInfo<'info>,
+    #[account(mut)]
+    pub user_mkt_token: AccountInfo<'info>,
+    #[account(mut)]
+    pub user_prc_token: AccountInfo<'info>,
+    #[account(mut)]
+    pub mkt_vault: AccountInfo<'info>,
+    #[account(mut)]
+    pub prc_vault: AccountInfo<'info>,
+    #[account(mut)]
+    pub orders: AccountInfo<'info>,
+    #[account(mut)]
+    pub result: AccountInfo<'info>,
+    #[account(address = token::ID)]
+    pub spl_token_prog: AccountInfo<'info>,
+}
+
+#[derive(Accounts)]
 pub struct Withdraw<'info> {
     #[account(mut)]
     pub market: ProgramAccount<'info, Market>,
@@ -1127,6 +1231,7 @@ pub struct MarketState {
 pub struct TradeResult {
     pub tokens_filled: u64,             // Received tokens
     pub tokens_posted: u64,             // Posted tokens
+    pub tokens_deposited: u64,          // Tokens deposited with the exchange (filled token cost + tokens posted)
     pub order_id: u128,                 // Order ID
 }
 
@@ -1137,6 +1242,10 @@ impl TradeResult {
 
     pub fn set_tokens_posted(&mut self, new_amount: u64) {
         self.tokens_posted = new_amount;
+    }
+
+    pub fn set_tokens_deposited(&mut self, new_amount: u64) {
+        self.tokens_deposited = new_amount;
     }
 
     pub fn set_order_id(&mut self, new_amount: u128) {
@@ -1162,8 +1271,12 @@ impl WithdrawResult {
 
 #[error]
 pub enum ErrorCode {
+    #[msg("Access denied")]
+    AccessDenied,
     #[msg("Account not found")]
     AccountNotFound,
+    #[msg("Order not found")]
+    OrderNotFound,
     #[msg("Invalid parameters")]
     InvalidParameters,
     #[msg("Invalid account")]

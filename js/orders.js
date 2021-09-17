@@ -54,6 +54,16 @@ function encodeOrderId(orderId) {
     return enc.write(new Uint8Array(zflist)).finalize()
 }
 
+function formatOrder(order) {
+    var res = {
+        tokensFilled: order.tokensFilled.toString(),
+        tokensPosted: order.tokensPosted.toString(),
+        tokensDeposited: order.tokensDeposited.toString(),
+        orderId: encodeOrderId(order.orderId),
+    }
+    return res
+}
+
 async function createTokenMint() {
     var res = await exec('./new_token.sh')
     return res.stdout
@@ -92,6 +102,9 @@ async function main() {
     console.log('Market Agent: ' + marketAgent.pubkey)
     console.log('User Token: ' + userToken2.pubkey)
     console.log('Vault Token: ' + tokenVault2.pubkey)
+
+    res = await aquadex.account.market.fetch(marketPK)
+    console.log(res)
 
     const resultData1 = anchor.web3.Keypair.generate()
     const tx = new anchor.web3.Transaction()
@@ -132,8 +145,7 @@ async function main() {
             }
         )
         var res = await aquadex.account.tradeResult.fetch(resultData1.publicKey)
-        res.orderId = encodeOrderId(res.orderId)
-        console.log(res)
+        console.log(formatOrder(res))
 
         console.log('Limit Ask 2')
         await aquadex.rpc.limitAsk(
@@ -160,11 +172,10 @@ async function main() {
             }
         )
         res = await aquadex.account.tradeResult.fetch(resultData1.publicKey)
-        res.orderId = encodeOrderId(res.orderId)
-        console.log(res)
+        console.log(formatOrder(res))
     }
 
-    if (false) {
+    if (true) {
         console.log('Limit Bid')
         await aquadex.rpc.limitBid(
             new anchor.BN(11 * 10000),  // Quantity
@@ -190,8 +201,7 @@ async function main() {
             }
         )
         res = await aquadex.account.tradeResult.fetch(resultData1.publicKey)
-        res.orderId = encodeOrderId(res.orderId)
-        console.log(res)
+        console.log(formatOrder(res))
     }
 }
 
