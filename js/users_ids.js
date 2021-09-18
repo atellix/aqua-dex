@@ -58,7 +58,7 @@ async function main() {
         console.log('User: ' + (i + 1) + ' PK: ' + user.pubkey)
         userWallet = importSecretKey(user.secret)
         await storeUser(i + 1, userWallet)
-        process.exit(0)
+        //process.exit(0)
     }
 }
 

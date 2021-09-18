@@ -6,3 +6,5 @@ js/node_modules/*
 *.swp
 *.swo
 js/*.json
+js/users/*.yml
+js/users/*.json

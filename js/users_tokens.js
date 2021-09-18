@@ -68,12 +68,15 @@ async function main() {
         var token2 = new Token(provider.connection, tokenMint2, TOKEN_PROGRAM_ID, userWallet)
         var userToken1 = await token1.getOrCreateAssociatedAccountInfo(userWallet.publicKey)
         var userToken2 = await token2.getOrCreateAssociatedAccountInfo(userWallet.publicKey)
+        //console.log("Asc Token 1: " + userToken1.address.toString())
+        //console.log("Asc Token 2: " + userToken2.address.toString())
 
         // Mint tokens
         var token1 = new Token(provider.connection, tokenMint1, TOKEN_PROGRAM_ID, provider.wallet.payer)
         var token2 = new Token(provider.connection, tokenMint2, TOKEN_PROGRAM_ID, provider.wallet.payer)
         await token1.mintTo(userToken1.address, provider.wallet.payer, [], '1000000000000')
         await token2.mintTo(userToken2.address, provider.wallet.payer, [], '1000000000000')
+        //process.exit(0)
     }
 }
 
