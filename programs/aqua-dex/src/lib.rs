@@ -14,6 +14,10 @@ use solana_program::{
 extern crate slab_alloc;
 use slab_alloc::{ SlabPageAlloc, CritMapHeader, CritMap, AnyNode, LeafNode, SlabVec, SlabTreeError };
 
+pub const VERSION_MAJOR: u32 = 1;
+pub const VERSION_MINOR: u32 = 0;
+pub const VERSION_PATCH: u32 = 0;
+
 pub const MAX_ORDERS: u32 = 16;         // Max orders on each side of the orderbook
 pub const MAX_ACCOUNTS: u32 = 16;       // Max number of accounts per settlement data file
 pub const MAX_EVICTIONS: u32 = 10;      // Max number of orders to evict before aborting
@@ -363,9 +367,21 @@ fn log_settlement(
     Ok(())
 }
 
+fn get_version() -> SemverRelease {
+    SemverRelease { major: VERSION_MAJOR, minor: VERSION_MINOR, patch: VERSION_PATCH }
+}
+
 #[program]
 pub mod aqua_dex {
     use super::*;
+
+    pub fn version(ctx: Context<Version>) -> ProgramResult {
+        // TODO: Make this a PDA and store it once
+        let acc_result = &ctx.accounts.result.to_account_info();
+        let version = get_version();
+        store_struct::<SemverRelease>(&version, acc_result)?;
+        Ok(())
+    }
 
     pub fn create_market(ctx: Context<CreateMarket>,
         inp_agent_nonce: u8,
@@ -1195,6 +1211,12 @@ pub struct Withdraw<'info> {
     pub spl_token_prog: AccountInfo<'info>,
 }
 
+#[derive(Accounts)]
+pub struct Version<'info> {
+    #[account(mut)]
+    pub result: AccountInfo<'info>,
+}
+
 #[account]
 pub struct Market {
     pub active: bool,                   // Active flag
@@ -1267,6 +1289,13 @@ impl WithdrawResult {
     pub fn set_prc_tokens(&mut self, new_amount: u64) {
         self.prc_tokens = new_amount;
     }
+}
+
+#[account]
+pub struct SemverRelease {
+    pub major: u32,
+    pub minor: u32,
+    pub patch: u32,
 }
 
 #[error]

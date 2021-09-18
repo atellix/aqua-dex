@@ -64,6 +64,14 @@ function formatOrder(order) {
     return res
 }
 
+function formatWithdraw(order) {
+    var res = {
+        marketTokens: order.mktTokens.toString(),
+        pricingTokens: order.prcTokens.toString(),
+    }
+    return res
+}
+
 async function createTokenMint() {
     var res = await exec('./new_token.sh')
     return res.stdout
@@ -103,10 +111,11 @@ async function main() {
     console.log('User Token: ' + userToken2.pubkey)
     console.log('Vault Token: ' + tokenVault2.pubkey)
 
-    res = await aquadex.account.market.fetch(marketPK)
-    console.log(res)
+    //res = await aquadex.account.market.fetch(marketPK)
+    //console.log(res)
 
     const resultData1 = anchor.web3.Keypair.generate()
+    const resultData2 = anchor.web3.Keypair.generate()
     const tx = new anchor.web3.Transaction()
     tx.add(
         anchor.web3.SystemProgram.createAccount({
@@ -117,7 +126,18 @@ async function main() {
             programId: aquadexPK
         })
     )
-    await provider.send(tx, [resultData1])
+    tx.add(
+        anchor.web3.SystemProgram.createAccount({
+            fromPubkey: provider.wallet.publicKey,
+            newAccountPubkey: resultData2.publicKey,
+            space: withdrawResultBytes,
+            lamports: withdrawResultRent,
+            programId: aquadexPK
+        })
+    )
+    await provider.send(tx, [resultData1, resultData2])
+
+    var order1
 
     if (true) {
         console.log('Limit Ask 1')
@@ -145,7 +165,31 @@ async function main() {
             }
         )
         var res = await aquadex.account.tradeResult.fetch(resultData1.publicKey)
+        order1 = res.orderId
         console.log(formatOrder(res))
+
+        console.log('Cancel Order 1')
+        await aquadex.rpc.cancelOrder(
+            1, // 0 - Bid, 1 - Ask
+            order1,
+            {
+                accounts: {
+                    market: marketPK,
+                    state: marketStatePK,
+                    agent: new PublicKey(marketAgent.pubkey),
+                    user: provider.wallet.publicKey,
+                    userMktToken: new PublicKey(userToken1.pubkey),
+                    userPrcToken: new PublicKey(userToken2.pubkey),
+                    mktVault: new PublicKey(tokenVault1.pubkey),
+                    prcVault: new PublicKey(tokenVault2.pubkey),
+                    orders: ordersPK,
+                    result: resultData2.publicKey,
+                    splTokenProg: TOKEN_PROGRAM_ID,
+                }
+            }
+        )
+        res = await aquadex.account.withdrawResult.fetch(resultData2.publicKey)
+        console.log(formatWithdraw(res))
 
         console.log('Limit Ask 2')
         await aquadex.rpc.limitAsk(
