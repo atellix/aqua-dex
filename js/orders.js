@@ -163,6 +163,7 @@ async function main() {
                     result: resultData1.publicKey,
                     splTokenProg: TOKEN_PROGRAM_ID,
                 },
+                signers: [resultData1],
             }
         )
         var res = await aquadex.account.tradeResult.fetch(resultData1.publicKey)
@@ -186,7 +187,8 @@ async function main() {
                     orders: ordersPK,
                     result: resultData2.publicKey,
                     splTokenProg: TOKEN_PROGRAM_ID,
-                }
+                },
+                signers: [resultData2],
             }
         )
         res = await aquadex.account.withdrawResult.fetch(resultData2.publicKey)
@@ -214,7 +216,8 @@ async function main() {
                     settleB: settle2PK,
                     result: resultData1.publicKey,
                     splTokenProg: TOKEN_PROGRAM_ID,
-                }
+                },
+                signers: [resultData1],
             }
         )
         res = await aquadex.account.tradeResult.fetch(resultData1.publicKey)
@@ -244,7 +247,8 @@ async function main() {
                     settleB: settle2PK,
                     result: resultData1.publicKey,
                     splTokenProg: TOKEN_PROGRAM_ID,
-                }
+                },
+                signers: [resultData1],
             }
         )
         res = await aquadex.account.tradeResult.fetch(resultData1.publicKey)

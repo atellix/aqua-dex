@@ -14,8 +14,6 @@ use solana_program::{
 extern crate slab_alloc;
 use slab_alloc::{ SlabPageAlloc, CritMapHeader, CritMap, AnyNode, LeafNode, SlabVec, SlabTreeError };
 
-// TODO: Make result account PDAs based on user key
-
 pub const VERSION_MAJOR: u32 = 1;
 pub const VERSION_MINOR: u32 = 0;
 pub const VERSION_PATCH: u32 = 0;
@@ -661,7 +659,7 @@ pub mod aqua_dex {
             let posted_order = ob.index::<Order>(OrderDT::AskOrder as u16, posted_node.slot() as usize);
             let posted_qty = posted_order.amount;
             let posted_price = Order::price(posted_node.key());
-            msg!("Atellix: Matched Ask Order[{}] - {} @ {}", posted_node.slot().to_string(), posted_qty.to_string(), posted_price.to_string());
+            msg!("Atellix: Matched Ask [{}] {} @ {}", posted_node.slot().to_string(), posted_qty.to_string(), posted_price.to_string());
             if posted_price <= inp_price {
                 // Fill order
                 if posted_qty == tokens_to_fill {         // Match the entire order exactly
@@ -898,7 +896,7 @@ pub mod aqua_dex {
             let posted_order = ob.index::<Order>(OrderDT::BidOrder as u16, posted_node.slot() as usize);
             let posted_qty = posted_order.amount;
             let posted_price = Order::price(posted_node.key());
-            msg!("Atellix: Matched Bid Order[{}] - {} @ {}", posted_node.slot().to_string(), posted_qty.to_string(), posted_price.to_string());
+            msg!("Atellix: Matched Bid [{}] {} @ {}", posted_node.slot().to_string(), posted_qty.to_string(), posted_price.to_string());
             if posted_price >= inp_price {
                 // Fill order
                 if posted_qty == tokens_to_fill {         // Match the entire order exactly
@@ -1262,7 +1260,7 @@ pub struct OrderContext<'info> {
     pub settle_a: AccountInfo<'info>,
     #[account(mut)]
     pub settle_b: AccountInfo<'info>,
-    #[account(mut)]
+    #[account(mut, signer)]
     pub result: AccountInfo<'info>,
     #[account(address = token::ID)]
     pub spl_token_prog: AccountInfo<'info>,
@@ -1287,7 +1285,7 @@ pub struct CancelOrder<'info> {
     pub prc_vault: AccountInfo<'info>,
     #[account(mut)]
     pub orders: AccountInfo<'info>,
-    #[account(mut)]
+    #[account(mut, signer)]
     pub result: AccountInfo<'info>,
     #[account(address = token::ID)]
     pub spl_token_prog: AccountInfo<'info>,
@@ -1312,7 +1310,7 @@ pub struct Withdraw<'info> {
     pub prc_vault: AccountInfo<'info>,
     #[account(mut)]
     pub settle: AccountInfo<'info>,
-    #[account(mut)]
+    #[account(mut, signer)]
     pub result: AccountInfo<'info>,
     #[account(address = token::ID)]
     pub spl_token_prog: AccountInfo<'info>,

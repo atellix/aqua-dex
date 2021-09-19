@@ -143,7 +143,7 @@ async function main() {
                         result: resultData1.publicKey,
                         splTokenProg: TOKEN_PROGRAM_ID,
                     },
-                    signers: [userWallet],
+                    signers: [userWallet, resultData1],
                 }
             )
             var res = await aquadex.account.tradeResult.fetch(resultData1.publicKey)
@@ -172,7 +172,7 @@ async function main() {
                         result: resultData1.publicKey,
                         splTokenProg: TOKEN_PROGRAM_ID,
                     },
-                    signers: [userWallet],
+                    signers: [userWallet, resultData1],
                 }
             )
             var res = await aquadex.account.tradeResult.fetch(resultData1.publicKey)
