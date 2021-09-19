@@ -146,6 +146,7 @@ async function main() {
             new anchor.BN(5 * 10000), // Price
             true,
             false,
+            new anchor.BN(0),           // Order expiry
             {
                 accounts: {
                     market: marketPK,
@@ -197,6 +198,7 @@ async function main() {
             new anchor.BN(5.1 * 10000), // Price
             true,
             false,
+            new anchor.BN(0),           // Order expiry
             {
                 accounts: {
                     market: marketPK,
@@ -226,6 +228,7 @@ async function main() {
             new anchor.BN(7 * 10000),   // Price
             true,                       // Post order
             false,                      // Require filled if not posted
+            new anchor.BN(0),           // Order expiry
             {
                 accounts: {
                     market: marketPK,

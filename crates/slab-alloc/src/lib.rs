@@ -972,8 +972,8 @@ impl CritMap<'_> {
         }
     }
 
-    fn predicate_min_max<F: Fn(&SlabPageAlloc, &LeafNode) -> bool>(&self,
-        predicate: F,
+    fn predicate_min_max<F: FnMut(&SlabPageAlloc, &LeafNode) -> bool>(&self,
+        mut predicate: F,
         find_max: bool,
     ) -> Option<&LeafNode> {
         // Stack-based min/max search
@@ -1006,12 +1006,12 @@ impl CritMap<'_> {
     }
 
     #[inline]
-    pub fn predicate_min<F: Fn(&SlabPageAlloc, &LeafNode) -> bool>(&self, predicate: F) -> Option<&LeafNode> {
+    pub fn predicate_min<F: FnMut(&SlabPageAlloc, &LeafNode) -> bool>(&self, predicate: F) -> Option<&LeafNode> {
         self.predicate_min_max(predicate, false)
     }
 
     #[inline]
-    pub fn predicate_max<F: Fn(&SlabPageAlloc, &LeafNode) -> bool>(&self, predicate: F) -> Option<&LeafNode> {
+    pub fn predicate_max<F: FnMut(&SlabPageAlloc, &LeafNode) -> bool>(&self, predicate: F) -> Option<&LeafNode> {
         self.predicate_min_max(predicate, true)
     }
 

@@ -125,6 +125,8 @@ async function main() {
         marketAgent.nonce,
         tokenVault1.nonce,
         tokenVault2.nonce,
+        true,                   // Expire enable
+        new anchor.BN(1),       // Min expire
         {
             accounts: {
                 market: market.publicKey,

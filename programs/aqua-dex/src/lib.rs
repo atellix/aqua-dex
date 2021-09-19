@@ -6,13 +6,15 @@ use anchor_lang::prelude::*;
 use anchor_spl::token::{ self, Transfer };
 use solana_program::{
     sysvar, system_program,
-    program::{ invoke },
+    program::{ invoke }, clock::Clock,
     account_info::AccountInfo,
     instruction::{ AccountMeta, Instruction }
 };
 
 extern crate slab_alloc;
 use slab_alloc::{ SlabPageAlloc, CritMapHeader, CritMap, AnyNode, LeafNode, SlabVec, SlabTreeError };
+
+// TODO: Make result account PDAs based on user key
 
 pub const VERSION_MAJOR: u32 = 1;
 pub const VERSION_MINOR: u32 = 0;
@@ -21,6 +23,7 @@ pub const VERSION_PATCH: u32 = 0;
 pub const MAX_ORDERS: u32 = 16;         // Max orders on each side of the orderbook
 pub const MAX_ACCOUNTS: u32 = 16;       // Max number of accounts per settlement data file
 pub const MAX_EVICTIONS: u32 = 10;      // Max number of orders to evict before aborting
+pub const MAX_EXPIRATIONS: u32 = 10;    // Max number of expired orders to remove before proceeding with current order
 pub const SPL_TOKEN_PK: &str = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
 pub const ASC_TOKEN_PK: &str = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL";
 
@@ -62,6 +65,7 @@ pub enum SettleDT {         // Account settlement data types
 #[repr(packed)]
 pub struct Order {
     pub amount: u64,
+    pub expiry: i64,
 }
 unsafe impl Zeroable for Order {}
 unsafe impl Pod for Order {}
@@ -171,6 +175,11 @@ impl AccountEntry {
     }
 }
 
+
+fn get_version() -> SemverRelease {
+    SemverRelease { major: VERSION_MAJOR, minor: VERSION_MINOR, patch: VERSION_PATCH }
+}
+
 #[inline]
 fn map_datatype(data_type: DT) -> u16 {
     match data_type {
@@ -232,7 +241,7 @@ fn map_max(pt: &mut SlabPageAlloc, data_type: DT) -> Option<LeafNode> {
 }
 
 #[inline]
-fn map_predicate_min<F: Fn(&SlabPageAlloc, &LeafNode) -> bool>(pt: &mut SlabPageAlloc, data_type: DT, predicate: F) -> Option<LeafNode> {
+fn map_predicate_min<F: FnMut(&SlabPageAlloc, &LeafNode) -> bool>(pt: &mut SlabPageAlloc, data_type: DT, predicate: F) -> Option<LeafNode> {
     let cm = CritMap { slab: pt, type_id: map_datatype(data_type), capacity: map_len(data_type) };
     let res = cm.predicate_min(predicate);
     match res {
@@ -242,7 +251,7 @@ fn map_predicate_min<F: Fn(&SlabPageAlloc, &LeafNode) -> bool>(pt: &mut SlabPage
 }
 
 #[inline]
-fn map_predicate_max<F: Fn(&SlabPageAlloc, &LeafNode) -> bool>(pt: &mut SlabPageAlloc, data_type: DT, predicate: F) -> Option<LeafNode> {
+fn map_predicate_max<F: FnMut(&SlabPageAlloc, &LeafNode) -> bool>(pt: &mut SlabPageAlloc, data_type: DT, predicate: F) -> Option<LeafNode> {
     let cm = CritMap { slab: pt, type_id: map_datatype(data_type), capacity: map_len(data_type) };
     let res = cm.predicate_max(predicate);
     match res {
@@ -367,8 +376,20 @@ fn log_settlement(
     Ok(())
 }
 
-fn get_version() -> SemverRelease {
-    SemverRelease { major: VERSION_MAJOR, minor: VERSION_MINOR, patch: VERSION_PATCH }
+fn valid_order(order_type: OrderDT, leaf: &LeafNode, user_key: &Pubkey, sl: &SlabPageAlloc, expired_orders: &mut Vec<u128>, clock_ts: i64) -> bool {
+    let order = sl.index::<Order>(order_type as u16, leaf.slot() as usize);
+    let valid_expiry: bool = order.expiry == 0 || order.expiry < clock_ts;      // Check expiry timestamp if needed
+    let valid_user: bool = leaf.owner() != *user_key;                           // Prevent trades between the same account
+    let valid = valid_expiry && valid_user;
+    msg!("Atellix: Found {} [{}] {} @ {} Exp: {} Key: {} OK: {}",
+        match order_type { OrderDT::BidOrder => "Bid", OrderDT::AskOrder => "Ask", _ => unreachable!() },
+        leaf.slot().to_string(), order.amount().to_string(), Order::price(leaf.key()).to_string(),
+        order.expiry.to_string(), leaf.owner().to_string(), valid.to_string(),
+    );
+    if !valid_expiry {
+        expired_orders.push(leaf.key());
+    }
+    valid
 }
 
 #[program]
@@ -387,6 +408,8 @@ pub mod aqua_dex {
         inp_agent_nonce: u8,
         inp_mkt_vault_nonce: u8,
         inp_prc_vault_nonce: u8,
+        inp_expire_enable: bool,
+        inp_expire_min: i64,
     ) -> ProgramResult {
         let acc_market = &ctx.accounts.market.to_account_info();
         let acc_state = &ctx.accounts.state.to_account_info();
@@ -423,6 +446,12 @@ pub mod aqua_dex {
         if derived_prc_vault != *acc_prc_vault.key {
             msg!("Invalid pricing token vault");
             return Err(ErrorCode::InvalidDerivedAccount.into());
+        }
+
+        // Check expiration parameters
+        if inp_expire_min < 1 {
+            msg!("Invalid order expiration duration");
+            return Err(ErrorCode::InvalidParameters.into());
         }
 
         // Create token vaults
@@ -481,6 +510,8 @@ pub mod aqua_dex {
         let market = Market {
             active: true,
             order_fee: 0,
+            expire_enable: inp_expire_enable,
+            expire_min: inp_expire_min,
             state: *acc_state.key,
             agent: *acc_agent.key,
             agent_nonce: inp_agent_nonce,
@@ -551,12 +582,16 @@ pub mod aqua_dex {
         Ok(())
     }
 
-    pub fn limit_bid(ctx: Context<LimitOrder>,
+    pub fn limit_bid(ctx: Context<OrderContext>,
         inp_quantity: u64,
         inp_price: u64,
         inp_post: bool,     // Post the order order to the orderbook, otherwise it must be filled immediately
         inp_fill: bool,     // Require orders that are not posted to be filled completely (ignored for posted orders)
+        inp_expires: i64,   // Unix timestamp for order expiration (must be in the future, must exceed minimum duration)
     ) -> ProgramResult {
+        let clock = Clock::get()?;
+        let clock_ts = clock.unix_timestamp;
+
         let market = &ctx.accounts.market;
         let market_state = &ctx.accounts.state;
         let acc_agent = &ctx.accounts.agent.to_account_info();
@@ -583,7 +618,23 @@ pub mod aqua_dex {
             return Err(ErrorCode::RetrySettlementAccount.into());
         }
 
-        msg!("Atellix: Limit Order Bid - Qty: {} @ Price: {}", inp_quantity.to_string(), inp_price.to_string());
+        // Check expiration parameters
+        let mut expiry: i64 = 0;
+        // If expire timestamp is 0 then order does not expire
+        if market.expire_enable && inp_expires != 0 {
+            let expire_dur = inp_expires.checked_sub(clock_ts).ok_or(ProgramError::from(ErrorCode::Overflow))?;
+            if expire_dur <= 0 {
+                msg!("Order already expired");
+                return Err(ErrorCode::InvalidParameters.into());
+            }
+            if expire_dur < market.expire_min {
+                msg!("Order expires before minimum duration of {} seconds", market.expire_min.to_string());
+                return Err(ErrorCode::InvalidParameters.into());
+            }
+            expiry = inp_expires;
+        }
+
+        msg!("Atellix: Limit Bid: {} @ {}", inp_quantity.to_string(), inp_price.to_string());
 
         let tokens_in = inp_price * inp_quantity;
         let state_upd = &mut ctx.accounts.state;
@@ -597,32 +648,27 @@ pub mod aqua_dex {
         let mut tokens_to_fill: u64 = inp_quantity;
         let mut tokens_filled: u64 = 0;
         let mut tokens_paid: u64 = 0;
+        let mut expired_orders = Vec::new();
         loop {
-            let node_res = map_predicate_min(ob, DT::AskOrder, |sl, leaf| {
-                let valid = if leaf.owner() == *acc_user.key { false } else { true }; // Prevent trades between the same account
-                let order = sl.index::<Order>(OrderDT::AskOrder as u16, leaf.slot() as usize);
-                msg!("Atellix: Found Order[{}] - Owner: {} Qty: {} Price: {} Valid: {}",
-                    leaf.slot().to_string(), leaf.owner().to_string(), order.amount().to_string(), Order::price(leaf.key()).to_string(), valid.to_string()
-                );
-                //valid
-                true
-            });
+            let node_res = map_predicate_min(ob, DT::AskOrder, |sl, leaf|
+                valid_order(OrderDT::AskOrder, leaf, acc_user.key, sl, &mut expired_orders, clock_ts)
+            );
             if node_res.is_none() {
-                msg!("Atellix: No Matching Orders In Orderbook");
+                msg!("Atellix: No Match");
                 break;
             }
             let posted_node = node_res.unwrap();
             let posted_order = ob.index::<Order>(OrderDT::AskOrder as u16, posted_node.slot() as usize);
             let posted_qty = posted_order.amount;
             let posted_price = Order::price(posted_node.key());
-            msg!("Atellix: Matched Ask Order[{}] - Qty: {} @ Price: {}", posted_node.slot().to_string(), posted_qty.to_string(), posted_price.to_string());
+            msg!("Atellix: Matched Ask Order[{}] - {} @ {}", posted_node.slot().to_string(), posted_qty.to_string(), posted_price.to_string());
             if posted_price <= inp_price {
                 // Fill order
                 if posted_qty == tokens_to_fill {         // Match the entire order exactly
                     tokens_filled = tokens_filled.checked_add(tokens_to_fill).ok_or(ProgramError::from(ErrorCode::Overflow))?;
                     let tokens_part = tokens_to_fill.checked_mul(posted_price).ok_or(ProgramError::from(ErrorCode::Overflow))?;
                     tokens_paid = tokens_paid.checked_add(tokens_part).ok_or(ProgramError::from(ErrorCode::Overflow))?;
-                    msg!("Atellix: Filling - Qty: {} @ Price: {}", tokens_part.to_string(), posted_price.to_string());
+                    msg!("Atellix: Filling - {} @ {}", tokens_part.to_string(), posted_price.to_string());
                     map_remove(ob, DT::AskOrder, posted_node.key());
                     Order::free_index(ob, DT::AskOrder, posted_node.slot());
                     log_settlement(state_upd, acc_settle1, acc_settle2, &posted_node.owner(), false, tokens_part)?;
@@ -632,7 +678,7 @@ pub mod aqua_dex {
                     tokens_filled = tokens_filled.checked_add(posted_qty).ok_or(ProgramError::from(ErrorCode::Overflow))?;
                     let tokens_part = posted_qty.checked_mul(posted_price).ok_or(ProgramError::from(ErrorCode::Overflow))?;
                     tokens_paid = tokens_paid.checked_add(tokens_part).ok_or(ProgramError::from(ErrorCode::Overflow))?;
-                    msg!("Atellix: Filling - Qty: {} @ Price: {}", posted_qty.to_string(), posted_price.to_string());
+                    msg!("Atellix: Filling - {} @ {}", posted_qty.to_string(), posted_price.to_string());
                     map_remove(ob, DT::AskOrder, posted_node.key());
                     Order::free_index(ob, DT::AskOrder, posted_node.slot());
                     log_settlement(state_upd, acc_settle1, acc_settle2, &posted_node.owner(), false, tokens_part)?;
@@ -640,7 +686,7 @@ pub mod aqua_dex {
                     tokens_filled = tokens_filled.checked_add(tokens_to_fill).ok_or(ProgramError::from(ErrorCode::Overflow))?;
                     let tokens_part = tokens_to_fill.checked_mul(posted_price).ok_or(ProgramError::from(ErrorCode::Overflow))?;
                     tokens_paid = tokens_paid.checked_add(tokens_part).ok_or(ProgramError::from(ErrorCode::Overflow))?;
-                    msg!("Atellix: Filling - Qty: {} @ Price: {}", tokens_to_fill.to_string(), posted_price.to_string());
+                    msg!("Atellix: Filling - {} @ {}", tokens_to_fill.to_string(), posted_price.to_string());
                     let new_amount = posted_qty.checked_sub(tokens_to_fill).ok_or(ProgramError::from(ErrorCode::Overflow))?;
                     ob.index_mut::<Order>(OrderDT::AskOrder as u16, posted_node.slot() as usize).set_amount(new_amount);
                     log_settlement(state_upd, acc_settle1, acc_settle2, &posted_node.owner(), false, tokens_part)?;
@@ -649,6 +695,28 @@ pub mod aqua_dex {
             } else {
                 // Best price beyond limit price
                 break;
+            }
+        }
+        let mut expired_count: u32 = 0;
+        if expired_orders.len() > 0 {
+            loop {
+                if expired_orders.len() == 0 || expired_count == MAX_EXPIRATIONS {
+                    break;
+                }
+                let expired_id: u128 = expired_orders.pop().unwrap();
+                let expire_leaf = map_get(ob, DT::AskOrder, expired_id).unwrap();
+                let expire_order = *ob.index::<Order>(OrderDT::AskOrder as u16, expire_leaf.slot() as usize);
+                let expire_amount: u64 = expire_order.amount();
+                msg!("Atellix: Expired Order[{}] - Owner: {} {} @ {}",
+                    expire_leaf.slot().to_string(),
+                    expire_leaf.owner().to_string(),
+                    expire_order.amount().to_string(),
+                    Order::price(expire_leaf.key()).to_string(),
+                );
+                log_settlement(state_upd, acc_settle1, acc_settle2, &expire_leaf.owner(), true, expire_amount)?; // No multiply for Ask order
+                map_remove(ob, DT::AskOrder, expire_leaf.key());
+                Order::free_index(ob, DT::AskOrder, expire_leaf.slot());
+                expired_count = expired_count + 1;
             }
         }
 
@@ -660,7 +728,7 @@ pub mod aqua_dex {
             let order_id = Order::new_key(state_upd, Side::Bid, inp_price);
             let order_idx = Order::next_index(ob, DT::BidOrder)?;
             let order_node = LeafNode::new(order_id, order_idx, &acc_user.key);
-            let order = Order { amount: tokens_remaining };
+            let order = Order { amount: tokens_remaining, expiry: expiry };
             let mut eviction_count: u32 = 0;
             loop {
                 let entry = map_insert(ob, DT::BidOrder, &order_node);
@@ -678,7 +746,7 @@ pub mod aqua_dex {
                         return Err(ErrorCode::OrderbookFull.into());
                     }
                     let evict_amount: u64 = evict_order.amount();
-                    msg!("Atellix: Evicting Order[{}] - Owner: {} Qty: {} Price: {}",
+                    msg!("Atellix: Evicting Order[{}] - Owner: {} {} @ {}",
                         evict_node.slot().to_string(),
                         evict_node.owner().to_string(),
                         evict_order.amount().to_string(),
@@ -698,7 +766,7 @@ pub mod aqua_dex {
             tokens_paid = tokens_paid.checked_add(tokens_part).ok_or(ProgramError::from(ErrorCode::Overflow))?;
             result.set_tokens_posted(tokens_remaining);
             result.set_order_id(order_id);
-            msg!("Atellix: Posted Order[{}] - Qty: {} @ Price: {}", order_idx.to_string(), tokens_remaining.to_string(), inp_price.to_string());
+            msg!("Atellix: Posted Bid [{}] {} @ {}", order_idx.to_string(), tokens_remaining.to_string(), inp_price.to_string());
         }
         let discount = tokens_in.checked_sub(tokens_paid).ok_or(ProgramError::from(ErrorCode::Overflow))?;
         msg!("Atellix: Discount: {}", discount.to_string());
@@ -752,12 +820,16 @@ pub mod aqua_dex {
         Ok(())
     }
 
-    pub fn limit_ask(ctx: Context<LimitOrder>,
+    pub fn limit_ask(ctx: Context<OrderContext>,
         inp_quantity: u64,
         inp_price: u64,
         inp_post: bool,     // Post the order order to the orderbook, otherwise it must be filled immediately
         inp_fill: bool,     // Require orders that are not posted to be filled completely (ignored for posted orders)
+        inp_expires: i64,   // Unix timestamp for order expiration (must be in the future, must exceed minimum duration)
     ) -> ProgramResult {
+        let clock = Clock::get()?;
+        let clock_ts = clock.unix_timestamp;
+
         let market = &ctx.accounts.market;
         let market_state = &ctx.accounts.state;
         let acc_agent = &ctx.accounts.agent.to_account_info();
@@ -784,7 +856,23 @@ pub mod aqua_dex {
             return Err(ErrorCode::RetrySettlementAccount.into()); 
         }
 
-        msg!("Atellix: Limit Order Ask - Qty: {} @ Price: {}", inp_quantity.to_string(), inp_price.to_string());
+        // Check expiration parameters
+        let mut expiry: i64 = 0;
+        // If expire timestamp is 0 then order does not expire
+        if market.expire_enable && inp_expires != 0 {
+            let expire_dur = inp_expires.checked_sub(clock_ts).ok_or(ProgramError::from(ErrorCode::Overflow))?;
+            if expire_dur <= 0 {
+                msg!("Order already expired");
+                return Err(ErrorCode::InvalidParameters.into());
+            }
+            if expire_dur < market.expire_min {
+                msg!("Order expires before minimum duration of {} seconds", market.expire_min.to_string());
+                return Err(ErrorCode::InvalidParameters.into());
+            }
+            expiry = inp_expires;
+        }
+
+        msg!("Atellix: Limit Ask: {} @ {}", inp_quantity.to_string(), inp_price.to_string());
 
         let state_upd = &mut ctx.accounts.state;
         state_upd.mkt_vault_balance = state_upd.mkt_vault_balance.checked_add(inp_quantity).ok_or(ProgramError::from(ErrorCode::Overflow))?;
@@ -797,32 +885,27 @@ pub mod aqua_dex {
         let mut tokens_to_fill: u64 = inp_quantity;
         let mut tokens_filled: u64 = 0;
         let mut tokens_received: u64 = 0;
+        let mut expired_orders = Vec::new();
         loop {
-            let node_res = map_predicate_max(ob, DT::BidOrder, |sl, leaf| {
-                let valid = if leaf.owner() == *acc_user.key { false } else { true }; // Prevent trades between the same account
-                let order = sl.index::<Order>(OrderDT::BidOrder as u16, leaf.slot() as usize);
-                msg!("Atellix: Found Order[{}] - Owner: {} Qty: {} Price: {} Valid: {}",
-                    leaf.slot().to_string(), leaf.owner().to_string(), order.amount().to_string(), Order::price(leaf.key()).to_string(), valid.to_string()
-                );
-                //valid
-                true
-            });
+            let node_res = map_predicate_max(ob, DT::BidOrder, |sl, leaf|
+                valid_order(OrderDT::BidOrder, leaf, acc_user.key, sl, &mut expired_orders, clock_ts)
+            );
             if node_res.is_none() {
-                msg!("Atellix: No Matching Orders In Orderbook");
+                msg!("Atellix: No Match");
                 break;
             }
             let posted_node = node_res.unwrap();
             let posted_order = ob.index::<Order>(OrderDT::BidOrder as u16, posted_node.slot() as usize);
             let posted_qty = posted_order.amount;
             let posted_price = Order::price(posted_node.key());
-            msg!("Atellix: Matched Bid Order[{}] - Qty: {} @ Price: {}", posted_node.slot().to_string(), posted_qty.to_string(), posted_price.to_string());
+            msg!("Atellix: Matched Bid Order[{}] - {} @ {}", posted_node.slot().to_string(), posted_qty.to_string(), posted_price.to_string());
             if posted_price >= inp_price {
                 // Fill order
                 if posted_qty == tokens_to_fill {         // Match the entire order exactly
                     tokens_filled = tokens_filled.checked_add(tokens_to_fill).ok_or(ProgramError::from(ErrorCode::Overflow))?;
                     let tokens_part = tokens_to_fill.checked_mul(posted_price).ok_or(ProgramError::from(ErrorCode::Overflow))?;
                     tokens_received = tokens_received.checked_add(tokens_part).ok_or(ProgramError::from(ErrorCode::Overflow))?;
-                    msg!("Atellix: Filling - Qty: {} @ Price: {}", tokens_part.to_string(), posted_price.to_string());
+                    msg!("Atellix: Filling - {} @ {}", tokens_part.to_string(), posted_price.to_string());
                     map_remove(ob, DT::BidOrder, posted_node.key());
                     Order::free_index(ob, DT::BidOrder, posted_node.slot());
                     log_settlement(state_upd, acc_settle1, acc_settle2, &posted_node.owner(), true, tokens_to_fill)?;
@@ -832,7 +915,7 @@ pub mod aqua_dex {
                     tokens_filled = tokens_filled.checked_add(posted_qty).ok_or(ProgramError::from(ErrorCode::Overflow))?;
                     let tokens_part = posted_qty.checked_mul(posted_price).ok_or(ProgramError::from(ErrorCode::Overflow))?;
                     tokens_received = tokens_received.checked_add(tokens_part).ok_or(ProgramError::from(ErrorCode::Overflow))?;
-                    msg!("Atellix: Filling - Qty: {} @ Price: {}", posted_qty.to_string(), posted_price.to_string());
+                    msg!("Atellix: Filling - {} @ {}", posted_qty.to_string(), posted_price.to_string());
                     map_remove(ob, DT::BidOrder, posted_node.key());
                     Order::free_index(ob, DT::BidOrder, posted_node.slot());
                     log_settlement(state_upd, acc_settle1, acc_settle2, &posted_node.owner(), true, posted_qty)?;
@@ -840,7 +923,7 @@ pub mod aqua_dex {
                     tokens_filled = tokens_filled.checked_add(tokens_to_fill).ok_or(ProgramError::from(ErrorCode::Overflow))?;
                     let tokens_part = tokens_to_fill.checked_mul(posted_price).ok_or(ProgramError::from(ErrorCode::Overflow))?;
                     tokens_received = tokens_received.checked_add(tokens_part).ok_or(ProgramError::from(ErrorCode::Overflow))?;
-                    msg!("Atellix: Filling - Qty: {} @ Price: {}", tokens_to_fill.to_string(), posted_price.to_string());
+                    msg!("Atellix: Filling - {} @ {}", tokens_to_fill.to_string(), posted_price.to_string());
                     let new_amount = posted_qty.checked_sub(tokens_to_fill).ok_or(ProgramError::from(ErrorCode::Overflow))?;
                     ob.index_mut::<Order>(OrderDT::BidOrder as u16, posted_node.slot() as usize).set_amount(new_amount);
                     log_settlement(state_upd, acc_settle1, acc_settle2, &posted_node.owner(), true, tokens_to_fill)?;
@@ -849,6 +932,30 @@ pub mod aqua_dex {
             } else {
                 // Best price beyond limit price
                 break;
+            }
+        }
+        let mut expired_count: u32 = 0;
+        if expired_orders.len() > 0 {
+            loop {
+                if expired_orders.len() == 0 || expired_count == MAX_EXPIRATIONS {
+                    break;
+                }
+                let expired_id: u128 = expired_orders.pop().unwrap();
+                let expire_leaf = map_get(ob, DT::BidOrder, expired_id).unwrap();
+                let expire_order = *ob.index::<Order>(OrderDT::BidOrder as u16, expire_leaf.slot() as usize);
+                let expire_amount: u64 = expire_order.amount();
+                msg!("Atellix: Expired Order[{}] - Owner: {} {} @ {}",
+                    expire_leaf.slot().to_string(),
+                    expire_leaf.owner().to_string(),
+                    expire_order.amount().to_string(),
+                    Order::price(expire_leaf.key()).to_string(),
+                );
+                let expire_price = Order::price(expire_leaf.key());
+                let expire_total = expire_amount.checked_mul(expire_price).ok_or(ProgramError::from(ErrorCode::Overflow))?;
+                log_settlement(state_upd, acc_settle1, acc_settle2, &expire_leaf.owner(), false, expire_total)?; // Total calculated
+                map_remove(ob, DT::BidOrder, expire_leaf.key());
+                Order::free_index(ob, DT::BidOrder, expire_leaf.slot());
+                expired_count = expired_count + 1;
             }
         }
 
@@ -861,7 +968,7 @@ pub mod aqua_dex {
             let order_id = Order::new_key(state_upd, Side::Ask, inp_price);
             let order_idx = Order::next_index(ob, DT::AskOrder)?;
             let order_node = LeafNode::new(order_id, order_idx, &acc_user.key);
-            let order = Order { amount: tokens_remaining };
+            let order = Order { amount: tokens_remaining, expiry: 0 };
             let mut eviction_count: u32 = 0;
             loop {
                 let entry = map_insert(ob, DT::AskOrder, &order_node);
@@ -879,7 +986,7 @@ pub mod aqua_dex {
                         return Err(ErrorCode::OrderbookFull.into());
                     }
                     let evict_amount: u64 = evict_order.amount();
-                    msg!("Atellix: Evicting Order[{}] - Owner: {} Qty: {} Price: {}",
+                    msg!("Atellix: Evicting Order[{}] - Owner: {} {} @ {}",
                         evict_node.slot().to_string(),
                         evict_node.owner().to_string(),
                         evict_order.amount().to_string(),
@@ -896,7 +1003,7 @@ pub mod aqua_dex {
             }
             result.set_tokens_posted(tokens_remaining);
             result.set_order_id(order_id);
-            msg!("Atellix: Posted Order[{}] - Qty: {} @ Price: {}", order_idx.to_string(), inp_quantity.to_string(), inp_price.to_string());
+            msg!("Atellix: Posted Ask [{}] {} @ {}", order_idx.to_string(), inp_quantity.to_string(), inp_price.to_string());
         }
 
         // TODO: Pay for settlement log space
@@ -1133,7 +1240,7 @@ pub struct CreateMarket<'info> {
 }
 
 #[derive(Accounts)]
-pub struct LimitOrder<'info> {
+pub struct OrderContext<'info> {
     #[account(mut)]
     pub market: ProgramAccount<'info, Market>,
     #[account(mut)]
@@ -1221,6 +1328,8 @@ pub struct Version<'info> {
 pub struct Market {
     pub active: bool,                   // Active flag
     pub order_fee: u64,                 // Fee to reserve space in a settlement log when an order is filled or evicted
+    pub expire_enable: bool,            // Enable order expiration
+    pub expire_min: i64,                // Minimum time an order must be posted before expiration
     pub state: Pubkey,                  // Market statistics (frequently updated market details)
     pub agent: Pubkey,                  // Program derived address for signing transfers
     pub agent_nonce: u8,                // Agent nonce
