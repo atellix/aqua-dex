@@ -125,6 +125,16 @@ pub struct AccountsHeader {
 unsafe impl Zeroable for AccountsHeader {}
 unsafe impl Pod for AccountsHeader {}
 
+impl AccountsHeader {
+    pub fn set_prev(&mut self, key: &Pubkey) {
+        self.prev = *key
+    }
+
+    pub fn set_next(&mut self, key: &Pubkey) {
+        self.next = *key
+    }
+}
+
 #[derive(Copy, Clone)]
 #[repr(packed)]
 pub struct AccountEntry {
@@ -172,7 +182,6 @@ impl AccountEntry {
         Ok(())
     }
 }
-
 
 fn get_version() -> SemverRelease {
     SemverRelease { major: VERSION_MAJOR, minor: VERSION_MINOR, patch: VERSION_PATCH }
@@ -298,26 +307,20 @@ fn verify_matching_accounts(left: &Pubkey, right: &Pubkey, error_msg: Option<Str
     Ok(())
 }
 
-fn log_settlement(
-    state: &mut MarketState, 
-    settle_a: &AccountInfo,
-    settle_b: &AccountInfo,
-    owner: &Pubkey,
-    mkt_token: bool,
-    amount: u64,
-) -> ProgramResult {
-    // TODO: use log B
-    let owner_key: u128 = CritMap::bytes_hash(owner.as_ref());
+fn settle_account(settle: &AccountInfo, owner_id: u128, owner: &Pubkey, mkt_token: bool, amount: u64) -> FnResult<u64, ProgramError> {
     let new_balance: u64;
-    let log_data: &mut[u8] = &mut settle_a.try_borrow_mut_data()?;
+    let log_data: &mut[u8] = &mut settle.try_borrow_mut_data()?;
     let (_header, page_table) = mut_array_refs![log_data, size_of::<AccountsHeader>(); .. ;];
     let sl = SlabPageAlloc::new(page_table);
-    let has_item = map_get(sl, DT::Account, owner_key);
+    let has_item = map_get(sl, DT::Account, owner_id);
     if has_item.is_none() {
         new_balance = amount;
-        let acct_idx = AccountEntry::next_index(sl, DT::Account)?;
-        let new_item = map_insert(sl, DT::Account, &LeafNode::new(owner_key, acct_idx, owner));
+        let new_item = map_insert(sl, DT::Account, &LeafNode::new(owner_id, 0, owner));
         if new_item.is_ok() {
+            // Delay setting the slot parameter so that AccountEntry SlabVec index is not updated unless a key is actually to the CritMap
+            let acct_idx = AccountEntry::next_index(sl, DT::Account)?;
+            let mut cm = CritMap { slab: sl, type_id: map_datatype(DT::Account), capacity: map_len(DT::Account) };
+            cm.get_key_mut(owner_id).unwrap().set_slot(acct_idx);
             let mut mkt_bal: u64 = 0;
             let mut prc_bal: u64 = 0;
             if mkt_token {
@@ -331,9 +334,7 @@ fn log_settlement(
             };
             *sl.index_mut::<AccountEntry>(SettleDT::Account.into(), acct_idx as usize) = acct;
         } else {
-            // TODO: rollover to next log
-            msg!("Settlement log full");
-            return Err(ErrorCode::InternalError.into());
+            return Err(ProgramError::from(ErrorCode::SettlementLogFull));
         }
     } else {
         let log_item = has_item.unwrap();
@@ -349,6 +350,42 @@ fn log_settlement(
             sl.index_mut::<AccountEntry>(SettleDT::Account.into(), log_item.slot() as usize).set_prc_token_balance(prc_bal);
             new_balance = prc_bal;
         }
+    }
+    Ok(new_balance)
+}
+
+fn log_settlement(
+    market: &mut Market, 
+    state: &mut MarketState, 
+    settle_a: &AccountInfo,
+    settle_b: &AccountInfo,
+    owner: &Pubkey,
+    mkt_token: bool,
+    amount: u64,
+) -> ProgramResult {
+    msg!("Atellix: Log Settlement");
+    let new_balance: u64;
+    let owner_id: u128 = CritMap::bytes_hash(owner.as_ref());
+    let res = settle_account(settle_a, owner_id, owner, mkt_token, amount);
+    if res.is_err() {
+        let err = res.unwrap_err();
+        if err == ProgramError::from(ErrorCode::SettlementLogFull) {
+            market.log_rollover = true;
+            let res2 = settle_account(settle_b, owner_id, owner, mkt_token, amount);
+            if res2.is_err() {
+                let err2 = res2.unwrap_err();
+                if err2 == ProgramError::from(ErrorCode::SettlementLogFull) {
+                    msg!("Both settlement logs are full");
+                }
+                return Err(err2);
+            } else {
+                new_balance = res2.unwrap();
+            }
+        } else {
+            return Err(err);
+        }
+    } else {
+        new_balance = res.unwrap();
     }
 
     if mkt_token {
@@ -370,6 +407,39 @@ fn log_settlement(
             state.prc_order_balance.to_string(),
         );*/
     }
+
+    Ok(())
+}
+
+fn log_rollover(
+    market: &mut Market, 
+    market_key: Pubkey,
+    settle_b: &AccountInfo,
+    settle_n: &AccountInfo, // New log account
+) -> ProgramResult {
+
+    // Add new log entry to linked-list
+    let prev_data: &mut[u8] = &mut settle_b.try_borrow_mut_data()?;
+    let (prev_top, _prev_pages) = mut_array_refs![prev_data, size_of::<AccountsHeader>(); .. ;];
+    let prev_header: &mut [AccountsHeader] = cast_slice_mut(prev_top);
+    prev_header[0].set_next(settle_n.key);
+
+    let settle_data: &mut[u8] = &mut settle_n.try_borrow_mut_data()?;
+    let (settle_top, settle_pages) = mut_array_refs![settle_data, size_of::<AccountsHeader>(); .. ;];
+    let settle_header: &mut [AccountsHeader] = cast_slice_mut(settle_top);
+    settle_header[0] = AccountsHeader {
+        market: market_key,
+        prev: *settle_b.key,
+        next: Pubkey::default(),
+    };
+    let settle_slab = SlabPageAlloc::new(settle_pages);
+    settle_slab.setup_page_table();
+    settle_slab.allocate::<CritMapHeader, AnyNode>(SettleDT::AccountMap as u16, MAX_ACCOUNTS as usize).expect("Failed to allocate");
+    settle_slab.allocate::<SlabVec, AccountEntry>(SettleDT::Account as u16, MAX_ACCOUNTS as usize).expect("Failed to allocate");
+
+    market.settle_a = *settle_b.key;
+    market.settle_b = *settle_n.key;
+    market.log_rollover = false;
 
     Ok(())
 }
@@ -510,6 +580,7 @@ pub mod aqua_dex {
             order_fee: 0,
             expire_enable: inp_expire_enable,
             expire_min: inp_expire_min,
+            log_rollover: false,
             state: *acc_state.key,
             agent: *acc_agent.key,
             agent_nonce: inp_agent_nonce,
@@ -581,6 +652,7 @@ pub mod aqua_dex {
     }
 
     pub fn limit_bid(ctx: Context<OrderContext>,
+        inp_rollover: bool, // Perform settlement log rollover
         inp_quantity: u64,
         inp_price: u64,
         inp_post: bool,     // Post the order order to the orderbook, otherwise it must be filled immediately
@@ -590,7 +662,7 @@ pub mod aqua_dex {
         let clock = Clock::get()?;
         let clock_ts = clock.unix_timestamp;
 
-        let market = &ctx.accounts.market;
+        let market = &mut ctx.accounts.market;
         let market_state = &ctx.accounts.state;
         let acc_agent = &ctx.accounts.agent.to_account_info();
         let acc_user = &ctx.accounts.user.to_account_info();
@@ -600,6 +672,11 @@ pub mod aqua_dex {
         let acc_settle1 = &ctx.accounts.settle_a.to_account_info();
         let acc_settle2 = &ctx.accounts.settle_b.to_account_info();
         let acc_result = &ctx.accounts.result.to_account_info();
+
+        if !market.active {
+            msg!("Market closed");
+            return Err(ErrorCode::MarketClosed.into());
+        }
 
         verify_matching_accounts(&market.state, &market_state.key(), Some(String::from("Invalid market state")))?;
         verify_matching_accounts(&market.agent, &acc_agent.key, Some(String::from("Invalid market agent")))?;
@@ -614,6 +691,19 @@ pub mod aqua_dex {
             // Reload the current "market" account with the latest settlement log accounts and retry the transaction
             msg!("Please update market data and retry");
             return Err(ErrorCode::RetrySettlementAccount.into());
+        }
+
+        // Append a settlement log account
+        if inp_rollover {
+            if !market.log_rollover {
+                // Another market participant already appended an new log account (please retry transaction)
+                msg!("Please update market data and retry");
+                return Err(ErrorCode::RetrySettlementAccount.into());
+            }
+            let av = ctx.remaining_accounts;
+            let new_settlment_log = av.get(0).unwrap();
+            let market_pk: Pubkey = market.key();
+            log_rollover(market, market_pk, acc_settle2, new_settlment_log);
         }
 
         // Check expiration parameters
@@ -669,7 +759,7 @@ pub mod aqua_dex {
                     msg!("Atellix: Filling - {} @ {}", tokens_part.to_string(), posted_price.to_string());
                     map_remove(ob, DT::AskOrder, posted_node.key());
                     Order::free_index(ob, DT::AskOrder, posted_node.slot());
-                    log_settlement(state_upd, acc_settle1, acc_settle2, &posted_node.owner(), false, tokens_part)?;
+                    log_settlement(market, state_upd, acc_settle1, acc_settle2, &posted_node.owner(), false, tokens_part)?;
                     break;
                 } else if posted_qty < tokens_to_fill {   // Match the entire order and continue
                     tokens_to_fill = tokens_to_fill.checked_sub(posted_qty).ok_or(ProgramError::from(ErrorCode::Overflow))?;
@@ -679,7 +769,7 @@ pub mod aqua_dex {
                     msg!("Atellix: Filling - {} @ {}", posted_qty.to_string(), posted_price.to_string());
                     map_remove(ob, DT::AskOrder, posted_node.key());
                     Order::free_index(ob, DT::AskOrder, posted_node.slot());
-                    log_settlement(state_upd, acc_settle1, acc_settle2, &posted_node.owner(), false, tokens_part)?;
+                    log_settlement(market, state_upd, acc_settle1, acc_settle2, &posted_node.owner(), false, tokens_part)?;
                 } else if posted_qty > tokens_to_fill {   // Match part of the order
                     tokens_filled = tokens_filled.checked_add(tokens_to_fill).ok_or(ProgramError::from(ErrorCode::Overflow))?;
                     let tokens_part = tokens_to_fill.checked_mul(posted_price).ok_or(ProgramError::from(ErrorCode::Overflow))?;
@@ -687,7 +777,7 @@ pub mod aqua_dex {
                     msg!("Atellix: Filling - {} @ {}", tokens_to_fill.to_string(), posted_price.to_string());
                     let new_amount = posted_qty.checked_sub(tokens_to_fill).ok_or(ProgramError::from(ErrorCode::Overflow))?;
                     ob.index_mut::<Order>(OrderDT::AskOrder as u16, posted_node.slot() as usize).set_amount(new_amount);
-                    log_settlement(state_upd, acc_settle1, acc_settle2, &posted_node.owner(), false, tokens_part)?;
+                    log_settlement(market, state_upd, acc_settle1, acc_settle2, &posted_node.owner(), false, tokens_part)?;
                     break;
                 }
             } else {
@@ -711,7 +801,7 @@ pub mod aqua_dex {
                     expire_order.amount().to_string(),
                     Order::price(expire_leaf.key()).to_string(),
                 );
-                log_settlement(state_upd, acc_settle1, acc_settle2, &expire_leaf.owner(), true, expire_amount)?; // No multiply for Ask order
+                log_settlement(market, state_upd, acc_settle1, acc_settle2, &expire_leaf.owner(), true, expire_amount)?; // No multiply for Ask order
                 map_remove(ob, DT::AskOrder, expire_leaf.key());
                 Order::free_index(ob, DT::AskOrder, expire_leaf.slot());
                 expired_count = expired_count + 1;
@@ -751,7 +841,7 @@ pub mod aqua_dex {
                         Order::price(evict_node.key()).to_string(),
                     );
                     let evict_total = evict_amount.checked_mul(Order::price(evict_node.key())).ok_or(ProgramError::from(ErrorCode::Overflow))?;
-                    log_settlement(state_upd, acc_settle1, acc_settle2, &evict_node.owner(), false, evict_total)?;
+                    log_settlement(market, state_upd, acc_settle1, acc_settle2, &evict_node.owner(), false, evict_total)?;
                     map_remove(ob, DT::BidOrder, evict_node.key());
                     Order::free_index(ob, DT::BidOrder, evict_node.slot());
                     eviction_count = eviction_count + 1;
@@ -796,7 +886,7 @@ pub mod aqua_dex {
             state_upd.mkt_order_balance = state_upd.mkt_order_balance.checked_sub(tokens_filled).ok_or(ProgramError::from(ErrorCode::Overflow))?;
 
             let seeds = &[
-                ctx.accounts.market.to_account_info().key.as_ref(),
+                market.to_account_info().key.as_ref(),
                 &[market.agent_nonce],
             ];
             let signer = &[&seeds[..]];
@@ -819,6 +909,7 @@ pub mod aqua_dex {
     }
 
     pub fn limit_ask(ctx: Context<OrderContext>,
+        inp_rollover: bool, // Perform settlement log rollover
         inp_quantity: u64,
         inp_price: u64,
         inp_post: bool,     // Post the order order to the orderbook, otherwise it must be filled immediately
@@ -828,7 +919,7 @@ pub mod aqua_dex {
         let clock = Clock::get()?;
         let clock_ts = clock.unix_timestamp;
 
-        let market = &ctx.accounts.market;
+        let market = &mut ctx.accounts.market;
         let market_state = &ctx.accounts.state;
         let acc_agent = &ctx.accounts.agent.to_account_info();
         let acc_user = &ctx.accounts.user.to_account_info();
@@ -838,6 +929,11 @@ pub mod aqua_dex {
         let acc_settle1 = &ctx.accounts.settle_a.to_account_info();
         let acc_settle2 = &ctx.accounts.settle_b.to_account_info();
         let acc_result = &ctx.accounts.result.to_account_info();
+
+        if !market.active {
+            msg!("Market closed");
+            return Err(ErrorCode::MarketClosed.into());
+        }
 
         verify_matching_accounts(&market.state, &market_state.key(), Some(String::from("Invalid market state")))?;
         verify_matching_accounts(&market.agent, &acc_agent.key, Some(String::from("Invalid market agent")))?;
@@ -852,6 +948,19 @@ pub mod aqua_dex {
             // Reload the current "market" account with the latest settlement log accounts and retry the transaction
             msg!("Please update market data and retry");
             return Err(ErrorCode::RetrySettlementAccount.into()); 
+        }
+
+        // Append a settlement log account
+        if inp_rollover {
+            if !market.log_rollover {
+                // Another market participant already appended an new log account (please retry transaction)
+                msg!("Please update market data and retry");
+                return Err(ErrorCode::RetrySettlementAccount.into());
+            }
+            let av = ctx.remaining_accounts;
+            let new_settlment_log = av.get(0).unwrap();
+            let market_pk: Pubkey = market.key();
+            log_rollover(market, market_pk, acc_settle2, new_settlment_log);
         }
 
         // Check expiration parameters
@@ -906,7 +1015,7 @@ pub mod aqua_dex {
                     msg!("Atellix: Filling - {} @ {}", tokens_part.to_string(), posted_price.to_string());
                     map_remove(ob, DT::BidOrder, posted_node.key());
                     Order::free_index(ob, DT::BidOrder, posted_node.slot());
-                    log_settlement(state_upd, acc_settle1, acc_settle2, &posted_node.owner(), true, tokens_to_fill)?;
+                    log_settlement(market, state_upd, acc_settle1, acc_settle2, &posted_node.owner(), true, tokens_to_fill)?;
                     break;
                 } else if posted_qty < tokens_to_fill {   // Match the entire order and continue
                     tokens_to_fill = tokens_to_fill.checked_sub(posted_qty).ok_or(ProgramError::from(ErrorCode::Overflow))?;
@@ -916,7 +1025,7 @@ pub mod aqua_dex {
                     msg!("Atellix: Filling - {} @ {}", posted_qty.to_string(), posted_price.to_string());
                     map_remove(ob, DT::BidOrder, posted_node.key());
                     Order::free_index(ob, DT::BidOrder, posted_node.slot());
-                    log_settlement(state_upd, acc_settle1, acc_settle2, &posted_node.owner(), true, posted_qty)?;
+                    log_settlement(market, state_upd, acc_settle1, acc_settle2, &posted_node.owner(), true, posted_qty)?;
                 } else if posted_qty > tokens_to_fill {   // Match part of the order
                     tokens_filled = tokens_filled.checked_add(tokens_to_fill).ok_or(ProgramError::from(ErrorCode::Overflow))?;
                     let tokens_part = tokens_to_fill.checked_mul(posted_price).ok_or(ProgramError::from(ErrorCode::Overflow))?;
@@ -924,7 +1033,7 @@ pub mod aqua_dex {
                     msg!("Atellix: Filling - {} @ {}", tokens_to_fill.to_string(), posted_price.to_string());
                     let new_amount = posted_qty.checked_sub(tokens_to_fill).ok_or(ProgramError::from(ErrorCode::Overflow))?;
                     ob.index_mut::<Order>(OrderDT::BidOrder as u16, posted_node.slot() as usize).set_amount(new_amount);
-                    log_settlement(state_upd, acc_settle1, acc_settle2, &posted_node.owner(), true, tokens_to_fill)?;
+                    log_settlement(market, state_upd, acc_settle1, acc_settle2, &posted_node.owner(), true, tokens_to_fill)?;
                     break;
                 }
             } else {
@@ -950,7 +1059,7 @@ pub mod aqua_dex {
                 );
                 let expire_price = Order::price(expire_leaf.key());
                 let expire_total = expire_amount.checked_mul(expire_price).ok_or(ProgramError::from(ErrorCode::Overflow))?;
-                log_settlement(state_upd, acc_settle1, acc_settle2, &expire_leaf.owner(), false, expire_total)?; // Total calculated
+                log_settlement(market, state_upd, acc_settle1, acc_settle2, &expire_leaf.owner(), false, expire_total)?; // Total calculated
                 map_remove(ob, DT::BidOrder, expire_leaf.key());
                 Order::free_index(ob, DT::BidOrder, expire_leaf.slot());
                 expired_count = expired_count + 1;
@@ -990,7 +1099,7 @@ pub mod aqua_dex {
                         evict_order.amount().to_string(),
                         Order::price(evict_node.key()).to_string(),
                     );
-                    log_settlement(state_upd, acc_settle1, acc_settle2, &evict_node.owner(), true, evict_amount)?;
+                    log_settlement(market, state_upd, acc_settle1, acc_settle2, &evict_node.owner(), true, evict_amount)?;
                     map_remove(ob, DT::AskOrder, evict_node.key());
                     Order::free_index(ob, DT::AskOrder, evict_node.slot());
                     eviction_count = eviction_count + 1;
@@ -1028,7 +1137,7 @@ pub mod aqua_dex {
             state_upd.prc_order_balance = state_upd.prc_order_balance.checked_sub(tokens_received).ok_or(ProgramError::from(ErrorCode::Overflow))?;
 
             let seeds = &[
-                ctx.accounts.market.to_account_info().key.as_ref(),
+                market.to_account_info().key.as_ref(),
                 &[market.agent_nonce],
             ];
             let signer = &[&seeds[..]];
@@ -1151,13 +1260,13 @@ pub mod aqua_dex {
         verify_matching_accounts(&market.mkt_vault, &acc_mkt_vault.key, Some(String::from("Invalid market token vault")))?;
         verify_matching_accounts(&market.prc_vault, &acc_prc_vault.key, Some(String::from("Invalid pricing token vault")))?;
 
-        let owner_key: u128 = CritMap::bytes_hash(acc_user.key.as_ref());
+        let owner_id: u128 = CritMap::bytes_hash(acc_user.key.as_ref());
         let log_data: &mut[u8] = &mut acc_settle.try_borrow_mut_data()?;
         let (header, page_table) = mut_array_refs![log_data, size_of::<AccountsHeader>(); .. ;];
         let settle_header: &mut [AccountsHeader] = cast_slice_mut(header);
         verify_matching_accounts(&settle_header[0].market, &market.key(), Some(String::from("Invalid market")))?;
         let sl = SlabPageAlloc::new(page_table);
-        let has_item = map_get(sl, DT::Account, owner_key);
+        let has_item = map_get(sl, DT::Account, owner_id);
         if has_item.is_some() {
             let log_node = has_item.unwrap();
             let log_entry = sl.index::<AccountEntry>(SettleDT::Account as u16, log_node.slot() as usize);
@@ -1328,6 +1437,7 @@ pub struct Market {
     pub order_fee: u64,                 // Fee to reserve space in a settlement log when an order is filled or evicted
     pub expire_enable: bool,            // Enable order expiration
     pub expire_min: i64,                // Minimum time an order must be posted before expiration
+    pub log_rollover: bool,             // Request for a new settlement log account for rollover
     pub state: Pubkey,                  // Market statistics (frequently updated market details)
     pub agent: Pubkey,                  // Program derived address for signing transfers
     pub agent_nonce: u8,                // Agent nonce
@@ -1409,6 +1519,8 @@ pub struct SemverRelease {
 pub enum ErrorCode {
     #[msg("Access denied")]
     AccessDenied,
+    #[msg("Market closed")]
+    MarketClosed,
     #[msg("Account not found")]
     AccountNotFound,
     #[msg("Order not found")]
@@ -1423,6 +1535,8 @@ pub enum ErrorCode {
     InternalError,
     #[msg("External error")]
     ExternalError,
+    #[msg("Settlement log full")]
+    SettlementLogFull,
     #[msg("Orderbook full")]
     OrderbookFull,
     #[msg("Settlement log account does not match market, please update market data and retry")]

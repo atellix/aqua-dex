@@ -471,6 +471,11 @@ impl LeafNode {
     }
 
     #[inline]
+    pub fn set_slot(&mut self, new_slot: u32) {
+        self.slot = new_slot;
+    }
+
+    #[inline]
     pub fn owner(&self) -> Pubkey {
         Pubkey::new_from_array(self.owner)
     }
@@ -925,6 +930,31 @@ impl CritMap<'_> {
             }
             match node_ref.case().unwrap() {
                 NodeRef::Leaf(_) => break Some(node_ref.as_leaf().unwrap()),
+                NodeRef::Inner(inner) => {
+                    //let crit_bit_mask = (1u128 << 127) >> node_prefix_len;
+                    //let _search_key_crit_bit = (search_key & crit_bit_mask) != 0;
+                    node_handle = inner.walk_down(search_key).0;
+                    continue;
+                }
+            }
+        }
+    }
+
+    pub fn get_key_mut(&mut self, search_key: u128) -> Option<&mut LeafNode> {
+        let mut node_handle: NodeHandle = self.root()?;
+        loop {
+            let node_ref = self.get(node_handle).unwrap();
+            let node_prefix_len = node_ref.prefix_len();
+            let node_key = node_ref.key().unwrap();
+            let common_prefix_len = (search_key ^ node_key).leading_zeros();
+            if common_prefix_len < node_prefix_len {
+                return None;
+            }
+            match node_ref.case().unwrap() {
+                NodeRef::Leaf(_) => {
+                    let mut_ref = self.get_mut(node_handle).unwrap();
+                    break Some(mut_ref.as_leaf_mut().unwrap())
+                },
                 NodeRef::Inner(inner) => {
                     //let crit_bit_mask = (1u128 << 127) >> node_prefix_len;
                     //let _search_key_crit_bit = (search_key & crit_bit_mask) != 0;

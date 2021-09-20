@@ -15,6 +15,25 @@ anchor.setProvider(provider)
 
 const aquadex = anchor.workspace.AquaDex
 const aquadexPK = aquadex.programId
+const settleBytes = 130 + (16384 * 8)
+
+var mktData
+var marketPK
+var marketStatePK
+var ordersPK
+var settle1PK
+var settle2PK
+var marketAgent
+var tokenMint1
+var tokenMint2
+var tokenVault1
+var tokenVault2
+
+var settleRent
+var tradeResultBytes
+var tradeResultRent
+var withdrawResultBytes
+var withdrawResultRent
 
 const SPL_TOKEN_BYTES = 165
 const SPL_ASSOCIATED_TOKEN = new PublicKey('ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL')
@@ -65,30 +84,102 @@ function formatOrder(order) {
     return res
 }
 
-async function main() {
+async function readMarketSpec() {
     var mjs
     try {
         mjs = await fs.readFile('market.json')
     } catch (error) {
         console.error('File Error: ', error)
     }
-    const mktData = JSON.parse(mjs.toString())
+    mktData = JSON.parse(mjs.toString())
 
-    const marketPK = new PublicKey(mktData.market)
-    const marketStatePK = new PublicKey(mktData.marketState)
-    const ordersPK = new PublicKey(mktData.orders)
-    const settle1PK = new PublicKey(mktData.settle1)
-    const settle2PK = new PublicKey(mktData.settle2)
-    const marketAgent = await programAddress([marketPK.toBuffer()])
-    const tokenMint1 = new PublicKey(mktData.tokenMint1) // Market token
-    const tokenMint2 = new PublicKey(mktData.tokenMint2) // Pricing token
-    const tokenVault1 = await associatedTokenAddress(new PublicKey(marketAgent.pubkey), tokenMint1)
-    const tokenVault2 = await associatedTokenAddress(new PublicKey(marketAgent.pubkey), tokenMint2)
+    marketPK = new PublicKey(mktData.market)
+    marketStatePK = new PublicKey(mktData.marketState)
+    ordersPK = new PublicKey(mktData.orders)
+    settle1PK = new PublicKey(mktData.settle1)
+    settle2PK = new PublicKey(mktData.settle2)
+    marketAgent = await programAddress([marketPK.toBuffer()])
+    tokenMint1 = new PublicKey(mktData.tokenMint1) // Market token
+    tokenMint2 = new PublicKey(mktData.tokenMint2) // Pricing token
+    tokenVault1 = await associatedTokenAddress(new PublicKey(marketAgent.pubkey), tokenMint1)
+    tokenVault2 = await associatedTokenAddress(new PublicKey(marketAgent.pubkey), tokenMint2)
 
-    const tradeResultBytes = aquadex.account.tradeResult.size
-    const tradeResultRent = await provider.connection.getMinimumBalanceForRentExemption(tradeResultBytes)
-    const withdrawResultBytes = aquadex.account.withdrawResult.size
-    const withdrawResultRent = await provider.connection.getMinimumBalanceForRentExemption(withdrawResultBytes)
+    settleRent = await provider.connection.getMinimumBalanceForRentExemption(settleBytes)
+    tradeResultBytes = aquadex.account.tradeResult.size
+    tradeResultRent = await provider.connection.getMinimumBalanceForRentExemption(tradeResultBytes)
+    withdrawResultBytes = aquadex.account.withdrawResult.size
+    withdrawResultRent = await provider.connection.getMinimumBalanceForRentExemption(withdrawResultBytes)
+}
+
+async function limitOrder(orderType, user, result, qty, price) {
+    var userToken1 = await associatedTokenAddress(user.publicKey, tokenMint1)
+    var userToken2 = await associatedTokenAddress(user.publicKey, tokenMint2)
+    var mktSpec = await aquadex.account.market.fetch(marketPK)
+    settle1PK = mktSpec.settleA
+    settle2PK = mktSpec.settleB
+    var params = {
+        accounts: {
+            market: marketPK,
+            state: marketStatePK,
+            agent: new PublicKey(marketAgent.pubkey),
+            user: user.publicKey,
+            userMktToken: new PublicKey(userToken1.pubkey),
+            userPrcToken: new PublicKey(userToken2.pubkey),
+            mktVault: new PublicKey(tokenVault1.pubkey),
+            prcVault: new PublicKey(tokenVault2.pubkey),
+            orders: ordersPK,
+            settleA: settle1PK,
+            settleB: settle2PK,
+            result: result.publicKey,
+            splTokenProg: TOKEN_PROGRAM_ID,
+        },
+        signers: [user, result],
+    }
+    var rollover = false
+    var signers = [user, result]
+    var tx = new anchor.web3.Transaction()
+    if (mktSpec.logRollover) {
+        console.log("--- PERFORMING SETTLEMENT LOG ROLLOVER ---")
+        rollover = true
+        var settle = anchor.web3.Keypair.generate()
+        signers.push(settle)
+        tx.add(anchor.web3.SystemProgram.createAccount({
+            fromPubkey: provider.wallet.publicKey,
+            newAccountPubkey: settle.publicKey,
+            space: settleBytes,
+            lamports: settleRent,
+            programId: aquadexPK,
+        }))
+        params['remainingAccounts'] = [
+            { pubkey: settle.publicKey, isWritable: true, isSigner: false },
+        ]
+    }
+    if (orderType === 'bid') {
+        tx.add(await aquadex.instruction.limitBid(
+            rollover,                       // Rollover settlement log
+            new anchor.BN(qty * 10000),     // Quantity
+            new anchor.BN(price * 10000),   // Price
+            true,
+            false,
+            new anchor.BN(0),               // Order expiry
+            params,
+        ))
+    } else {
+        tx.add(await aquadex.instruction.limitAsk(
+            rollover,                       // Rollover settlement log
+            new anchor.BN(qty * 10000),     // Quantity
+            new anchor.BN(price * 10000),   // Price
+            true,
+            false,
+            new anchor.BN(0),               // Order expiry
+            params,
+        ))
+    }
+    await provider.send(tx, signers)
+}
+
+async function main() {
+    await readMarketSpec()
 
     var ujs
     try {
@@ -121,65 +212,17 @@ async function main() {
 
         if ((i % 2) == 0) {
             console.log('Ask')
-            await aquadex.rpc.limitAsk(
-                new anchor.BN(10 * 10000), // Quantity
-                new anchor.BN(5 * 10000),  // Price
-                true,
-                false,
-                new anchor.BN(0),           // Order expiry
-                {
-                    accounts: {
-                        market: marketPK,
-                        state: marketStatePK,
-                        agent: new PublicKey(marketAgent.pubkey),
-                        user: userWallet.publicKey,
-                        userMktToken: new PublicKey(userToken1.pubkey),
-                        userPrcToken: new PublicKey(userToken2.pubkey),
-                        mktVault: new PublicKey(tokenVault1.pubkey),
-                        prcVault: new PublicKey(tokenVault2.pubkey),
-                        orders: ordersPK,
-                        settleA: settle1PK,
-                        settleB: settle2PK,
-                        result: resultData1.publicKey,
-                        splTokenProg: TOKEN_PROGRAM_ID,
-                    },
-                    signers: [userWallet, resultData1],
-                }
-            )
+            await limitOrder('ask', userWallet, resultData1, 10, 5)
             var res = await aquadex.account.tradeResult.fetch(resultData1.publicKey)
             console.log(formatOrder(res))
         } else {
             console.log('Bid')
-            await aquadex.rpc.limitBid(
-                new anchor.BN(10 * 10000), // Quantity
-                new anchor.BN(5 * 10000),  // Price
-                true,
-                false,
-                new anchor.BN(0),           // Order expiry
-                {
-                    accounts: {
-                        market: marketPK,
-                        state: marketStatePK,
-                        agent: new PublicKey(marketAgent.pubkey),
-                        user: userWallet.publicKey,
-                        userMktToken: new PublicKey(userToken1.pubkey),
-                        userPrcToken: new PublicKey(userToken2.pubkey),
-                        mktVault: new PublicKey(tokenVault1.pubkey),
-                        prcVault: new PublicKey(tokenVault2.pubkey),
-                        orders: ordersPK,
-                        settleA: settle1PK,
-                        settleB: settle2PK,
-                        result: resultData1.publicKey,
-                        splTokenProg: TOKEN_PROGRAM_ID,
-                    },
-                    signers: [userWallet, resultData1],
-                }
-            )
+            await limitOrder('bid', userWallet, resultData1, 10, 5)
             var res = await aquadex.account.tradeResult.fetch(resultData1.publicKey)
             console.log(formatOrder(res))
         }
 
-        /*if (i == 9) {
+        /*if (i == 1) {
             process.exit(0)
         }*/
     }
