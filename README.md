@@ -62,66 +62,6 @@ Withdraw tokens from orders cleared by counter-parties.
 ## Create a market:
 
 ```javascript
-async function main() {
-    var mint1 = '3sd64AZF5fAC83i7wJ44Jxo145J6oE9fT2of6MtBjBeK'
-    var mint2 = '3dkM9fyZ6AADz4SZLWh29rgrdwsLwKgubyM74wJzLdBs'
-    const tokenMint1 = new PublicKey(mint1)
-    const tokenMint2 = new PublicKey(mint2)
-
-    market = anchor.web3.Keypair.generate()
-    marketState = anchor.web3.Keypair.generate()
-    orders = anchor.web3.Keypair.generate()
-    settle1 = anchor.web3.Keypair.generate()
-    settle2 = anchor.web3.Keypair.generate()
-
-    const ordersBytes = 130 + (16384 * 8)
-    const ordersRent = await provider.connection.getMinimumBalanceForRentExemption(ordersBytes)
-    const settleBytes = 130 + (16384 * 8)
-    const settleRent = await provider.connection.getMinimumBalanceForRentExemption(settleBytes)
-
-    const marketAgent = await programAddress([market.publicKey.toBuffer()])
-    const tokenVault1 = await associatedTokenAddress(new PublicKey(marketAgent.pubkey), tokenMint1)
-    const tokenVault2 = await associatedTokenAddress(new PublicKey(marketAgent.pubkey), tokenMint2)
-
-    var tx = new anchor.web3.Transaction()
-    tx.add(anchor.web3.SystemProgram.createAccount({
-        fromPubkey: provider.wallet.publicKey,
-        newAccountPubkey: market.publicKey,
-        space: aquadex.account.market.size,
-        lamports: await provider.connection.getMinimumBalanceForRentExemption(aquadex.account.market.size),
-        programId: aquadexPK,
-    }))
-    tx.add(anchor.web3.SystemProgram.createAccount({
-        fromPubkey: provider.wallet.publicKey,
-        newAccountPubkey: marketState.publicKey,
-        space: aquadex.account.marketState.size,
-        lamports: await provider.connection.getMinimumBalanceForRentExemption(aquadex.account.marketState.size),
-        programId: aquadexPK,
-    }))
-    tx.add(anchor.web3.SystemProgram.createAccount({
-        fromPubkey: provider.wallet.publicKey,
-        newAccountPubkey: orders.publicKey,
-        space: ordersBytes,
-        lamports: ordersRent,
-        programId: aquadexPK,
-    }))
-    tx.add(anchor.web3.SystemProgram.createAccount({
-        fromPubkey: provider.wallet.publicKey,
-        newAccountPubkey: settle1.publicKey,
-        space: settleBytes,
-        lamports: settleRent,
-        programId: aquadexPK,
-    }))
-    tx.add(anchor.web3.SystemProgram.createAccount({
-        fromPubkey: provider.wallet.publicKey,
-        newAccountPubkey: settle2.publicKey,
-        space: settleBytes,
-        lamports: settleRent,
-        programId: aquadexPK,
-    }))
-    await provider.send(tx, [market, marketState, orders, settle1, settle2])
-
-    console.log('Create Market')
     await aquadex.rpc.createMarket(
         marketAgent.nonce,
         tokenVault1.nonce,
@@ -148,38 +88,10 @@ async function main() {
             }
         }
     )
-}
 ```
 
 ## Trade tokens:
 ```javascript
-async function readMarketSpec() {
-    var mjs
-    try {
-        mjs = await fs.readFile('market.json')
-    } catch (error) {
-        console.error('File Error: ', error)
-    }
-    mktData = JSON.parse(mjs.toString())
-
-    marketPK = new PublicKey(mktData.market)
-    marketStatePK = new PublicKey(mktData.marketState)
-    ordersPK = new PublicKey(mktData.orders)
-    settle1PK = new PublicKey(mktData.settle1)
-    settle2PK = new PublicKey(mktData.settle2)
-    marketAgent = await programAddress([marketPK.toBuffer()])
-    tokenMint1 = new PublicKey(mktData.tokenMint1) // Market token
-    tokenMint2 = new PublicKey(mktData.tokenMint2) // Pricing token
-    tokenVault1 = await associatedTokenAddress(new PublicKey(marketAgent.pubkey), tokenMint1)
-    tokenVault2 = await associatedTokenAddress(new PublicKey(marketAgent.pubkey), tokenMint2)
-
-    settleRent = await provider.connection.getMinimumBalanceForRentExemption(settleBytes)
-    tradeResultBytes = aquadex.account.tradeResult.size
-    tradeResultRent = await provider.connection.getMinimumBalanceForRentExemption(tradeResultBytes)
-    withdrawResultBytes = aquadex.account.withdrawResult.size
-    withdrawResultRent = await provider.connection.getMinimumBalanceForRentExemption(withdrawResultBytes)
-}
-
 async function limitOrder(orderType, user, result, qty, price) {
     var userToken1 = await associatedTokenAddress(user.publicKey, tokenMint1)
     var userToken2 = await associatedTokenAddress(user.publicKey, tokenMint2)
@@ -245,50 +157,5 @@ async function limitOrder(orderType, user, result, qty, price) {
         ))
     }
     await provider.send(tx, signers)
-}
-
-async function main() {
-    await readMarketSpec()
-
-    var ujs
-    try {
-        ujs = await fs.readFile('users.json')
-    } catch (error) {
-        console.error('File Error: ', error)
-    }
-    const users = JSON.parse(ujs.toString())
-
-    var resultData1 = anchor.web3.Keypair.generate()
-    var tx = new anchor.web3.Transaction()
-    tx.add(
-        anchor.web3.SystemProgram.createAccount({
-            fromPubkey: provider.wallet.publicKey,
-            newAccountPubkey: resultData1.publicKey,
-            space: tradeResultBytes,
-            lamports: tradeResultRent,
-            programId: aquadexPK
-        })
-    )
-    await provider.send(tx, [resultData1])
-
-    for (var i = 0; i < users.length; i++) {
-        var user = users[i]
-        console.log('User: ' + (i + 1) + ' PK: ' + user.pubkey)
-        var userWallet = importSecretKey(user.secret)
-        var userToken1 = await associatedTokenAddress(userWallet.publicKey, tokenMint1)
-        var userToken2 = await associatedTokenAddress(userWallet.publicKey, tokenMint2)
-
-        if ((i % 2) == 0) {
-            console.log('Ask')
-            await limitOrder('ask', userWallet, resultData1, 10, 5)
-            var res = await aquadex.account.tradeResult.fetch(resultData1.publicKey)
-            console.log(formatOrder(res))
-        } else {
-            console.log('Bid')
-            await limitOrder('bid', userWallet, resultData1, 10, 5)
-            var res = await aquadex.account.tradeResult.fetch(resultData1.publicKey)
-            console.log(formatOrder(res))
-        }
-    }
 }
 ```
