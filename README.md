@@ -4,16 +4,16 @@
 
 AquaDEX powered by the Infinitrade™ order matching engine
 
-# H1 Decentralized EXchange on Solana
+# Decentralized EXchange on Solana
 
-## H2 Program Commands:
+## Program Commands:
 
-#### H4 create_market
+#### create_market
 
-#### H4 limit_bid
+#### limit_bid
 
-#### H4 limit_ask
+#### limit_ask
 
-#### H4 cancel_order
+#### cancel_order
 
-#### H4 withdraw
+#### withdraw
