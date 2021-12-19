@@ -63,32 +63,19 @@ Withdraw tokens from orders cleared by counter-parties.
 
 ```javascript
 async function main() {
-    //var mint1 = await createTokenMint()
-    //var mint2 = await createTokenMint()
     var mint1 = '3sd64AZF5fAC83i7wJ44Jxo145J6oE9fT2of6MtBjBeK'
     var mint2 = '3dkM9fyZ6AADz4SZLWh29rgrdwsLwKgubyM74wJzLdBs'
-    console.log("Mints: " + mint1 + " " + mint2)
     const tokenMint1 = new PublicKey(mint1)
     const tokenMint2 = new PublicKey(mint2)
-
-    var writeData = {}
-    writeData['tokenMint1'] = tokenMint1.toString()
-    writeData['tokenMint2'] = tokenMint2.toString()
 
     market = anchor.web3.Keypair.generate()
     marketState = anchor.web3.Keypair.generate()
     orders = anchor.web3.Keypair.generate()
     settle1 = anchor.web3.Keypair.generate()
     settle2 = anchor.web3.Keypair.generate()
-    writeData['market'] = market.publicKey.toString()
-    writeData['marketState'] = marketState.publicKey.toString()
-    writeData['orders'] = orders.publicKey.toString()
-    writeData['settle1'] = settle1.publicKey.toString()
-    writeData['settle2'] = settle2.publicKey.toString()
 
     const ordersBytes = 130 + (16384 * 8)
     const ordersRent = await provider.connection.getMinimumBalanceForRentExemption(ordersBytes)
-
     const settleBytes = 130 + (16384 * 8)
     const settleRent = await provider.connection.getMinimumBalanceForRentExemption(settleBytes)
 
@@ -166,27 +153,6 @@ async function main() {
 
 ## Trade tokens:
 ```javascript
-function encodeOrderId(orderId) {
-    const enc = new base32.Encoder({ type: "crockford", lc: true })
-    var zflist = orderId.toBuffer().toJSON().data
-    var zflen = 16 - zflist.length
-    if (zflen > 0) {
-        zfprefix = Array(zflen).fill(0)
-        zflist = zfprefix.concat(zflist)
-    }
-    return enc.write(new Uint8Array(zflist)).finalize()
-}
-
-function formatOrder(order) {
-    var res = {
-        tokensFilled: order.tokensFilled.toString(),
-        tokensPosted: order.tokensPosted.toString(),
-        tokensDeposited: order.tokensDeposited.toString(),
-        orderId: encodeOrderId(order.orderId),
-    }
-    return res
-}
-
 async function readMarketSpec() {
     var mjs
     try {
@@ -292,7 +258,6 @@ async function main() {
     }
     const users = JSON.parse(ujs.toString())
 
-    // TODO: Make result account PDAs based on user key
     var resultData1 = anchor.web3.Keypair.generate()
     var tx = new anchor.web3.Transaction()
     tx.add(
@@ -324,10 +289,6 @@ async function main() {
             var res = await aquadex.account.tradeResult.fetch(resultData1.publicKey)
             console.log(formatOrder(res))
         }
-
-        /*if (i == 1) {
-            process.exit(0)
-        }*/
     }
 }
 ```
