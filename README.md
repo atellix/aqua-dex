@@ -6,7 +6,7 @@ AquaDEX powered by the Infinitrade™ order matching engine
 
 # Decentralized EXchange on Solana
 
-## Program Commands:
+## Administration and Trading Commands:
 
 #### create_market
 
