@@ -1,9 +1,10 @@
-use std::{ io::Cursor, string::String, str::FromStr, result::Result as FnResult, mem::size_of, convert::TryFrom };
+use std::{ io::Cursor, string::String, result::Result as FnResult, mem::size_of, convert::TryFrom };
 use bytemuck::{ Pod, Zeroable, cast_slice_mut };
 use num_enum::{ TryFromPrimitive, IntoPrimitive };
 use arrayref::{ mut_array_refs };
 use anchor_lang::prelude::*;
-use anchor_spl::token::{ self, Transfer };
+use anchor_spl::token::{ self, Transfer, Token };
+use anchor_spl::associated_token::{ AssociatedToken };
 use solana_program::{
     sysvar, system_program,
     program::{ invoke }, clock::Clock,
@@ -24,8 +25,6 @@ pub const MAX_ORDERS: u32 = 16;         // Max orders on each side of the orderb
 pub const MAX_ACCOUNTS: u32 = 16;       // Max number of accounts per settlement data file
 pub const MAX_EVICTIONS: u32 = 10;      // Max number of orders to evict before aborting
 pub const MAX_EXPIRATIONS: u32 = 10;    // Max number of expired orders to remove before proceeding with current order
-pub const SPL_TOKEN_PK: &str = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
-pub const ASC_TOKEN_PK: &str = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL";
 
 #[repr(u8)]
 #[derive(PartialEq, Debug, Eq, Copy, Clone, TryFromPrimitive)]
@@ -507,13 +506,10 @@ pub mod aqua_dex {
             .map_err(|_| ErrorCode::InvalidDerivedAccount)?;
         verify_matching_accounts(acc_agent.key, &acc_agent_expected, Some(String::from("Invalid market agent")))?;
 
-        let spl_token: Pubkey = Pubkey::from_str(SPL_TOKEN_PK).unwrap();
-        let asc_token: Pubkey = Pubkey::from_str(ASC_TOKEN_PK).unwrap();
-
         // Verify associated token (market)
         let derived_mkt_vault = Pubkey::create_program_address(
-            &[&acc_agent.key.to_bytes(), &spl_token.to_bytes(), &acc_mkt_mint.key.to_bytes(), &[inp_mkt_vault_nonce]],
-            &asc_token
+            &[&acc_agent.key.to_bytes(), &Token::id().to_bytes(), &acc_mkt_mint.key.to_bytes(), &[inp_mkt_vault_nonce]],
+            &AssociatedToken::id(),
         ).map_err(|_| ErrorCode::InvalidDerivedAccount)?;
         if derived_mkt_vault != *acc_mkt_vault.key {
             msg!("Invalid market token vault");
@@ -522,8 +518,8 @@ pub mod aqua_dex {
 
         // Verify associated token (pricing)
         let derived_prc_vault = Pubkey::create_program_address(
-            &[&acc_agent.key.to_bytes(), &spl_token.to_bytes(), &acc_prc_mint.key.to_bytes(), &[inp_prc_vault_nonce]],
-            &asc_token
+            &[&acc_agent.key.to_bytes(), &Token::id().to_bytes(), &acc_prc_mint.key.to_bytes(), &[inp_prc_vault_nonce]],
+            &AssociatedToken::id(),
         ).map_err(|_| ErrorCode::InvalidDerivedAccount)?;
         if derived_prc_vault != *acc_prc_vault.key {
             msg!("Invalid pricing token vault");
@@ -542,14 +538,14 @@ pub mod aqua_dex {
         let acc_rent = &ctx.accounts.sys_rent.to_account_info();
 
         let instr1 = Instruction {
-            program_id: asc_token,
+            program_id: AssociatedToken::id(),
             accounts: vec![
                 AccountMeta::new(*acc_manager.key, true),
                 AccountMeta::new(*acc_mkt_vault.key, false),
                 AccountMeta::new_readonly(*acc_agent.key, false),
                 AccountMeta::new_readonly(*acc_mkt_mint.key, false),
                 AccountMeta::new_readonly(solana_program::system_program::id(), false),
-                AccountMeta::new_readonly(spl_token, false),
+                AccountMeta::new_readonly(Token::id(), false),
                 AccountMeta::new_readonly(sysvar::rent::id(), false),
             ],
             data: vec![],
@@ -564,14 +560,14 @@ pub mod aqua_dex {
         }
 
         let instr2 = Instruction {
-            program_id: asc_token,
+            program_id: AssociatedToken::id(),
             accounts: vec![
                 AccountMeta::new(*acc_manager.key, true),
                 AccountMeta::new(*acc_prc_vault.key, false),
                 AccountMeta::new_readonly(*acc_agent.key, false),
                 AccountMeta::new_readonly(*acc_prc_mint.key, false),
                 AccountMeta::new_readonly(solana_program::system_program::id(), false),
-                AccountMeta::new_readonly(spl_token, false),
+                AccountMeta::new_readonly(Token::id(), false),
                 AccountMeta::new_readonly(sysvar::rent::id(), false),
             ],
             data: vec![],
