@@ -43,6 +43,12 @@ function importSecretKey(keyStr) {
     return Keypair.fromSecretKey(new Uint8Array(spec))
 }
 
+function buf2hex(buffer) { // buffer is an ArrayBuffer
+  return [...new Uint8Array(buffer)]
+      .map(x => x.toString(16).padStart(2, '0'))
+      .join('');
+}
+
 function encodeOrderId(orderId) {
     const enc = new base32.Encoder({ type: "crockford", lc: true })
     var zflist = orderId.toBuffer().toJSON().data
@@ -52,6 +58,15 @@ function encodeOrderId(orderId) {
         zflist = zfprefix.concat(zflist)
     }
     return enc.write(new Uint8Array(zflist)).finalize()
+}
+
+function decodeOrderId(orderId) {
+    var dec = new base32.Decoder({ type: "crockford" })
+    var spec = dec.write(orderId).finalize()
+    var arr = new Uint8Array(spec)
+    var arrhex = [...arr].map(x => x.toString(16).padStart(2, '0')).join('')
+    var bgn = BigInt('0x' + arrhex)
+    return new anchor.BN(bgn.toString())
 }
 
 function formatOrder(order) {
@@ -85,7 +100,7 @@ async function main() {
         console.error('File Error: ', error)
     }
     const mktData = JSON.parse(ndjs.toString())
-    console.log(mktData)
+    //console.log(mktData)
     const marketPK = new PublicKey(mktData.market)
     const marketStatePK = new PublicKey(mktData.marketState)
     const ordersPK = new PublicKey(mktData.orders)
@@ -139,14 +154,15 @@ async function main() {
 
     var order1
 
-    if (true) {
+    if (false) {
         console.log('Limit Ask 1')
-        await aquadex.rpc.limitAsk(
-            new anchor.BN(10 * 10000), // Quantity
-            new anchor.BN(5 * 10000), // Price
+        console.log(await aquadex.rpc.limitAsk(
+            false,
+            new anchor.BN(2 * 1000000000),      // Quantity
+            new anchor.BN(58 * 1000000),        // Price
             true,
             false,
-            new anchor.BN(0),           // Order expiry
+            new anchor.BN(0),              // Order expiry
             {
                 accounts: {
                     market: marketPK,
@@ -165,15 +181,18 @@ async function main() {
                 },
                 signers: [resultData1],
             }
-        )
+        ))
         var res = await aquadex.account.tradeResult.fetch(resultData1.publicKey)
         order1 = res.orderId
         console.log(formatOrder(res))
+    }
 
+    if (true) {
         console.log('Cancel Order 1')
+        var orderId = decodeOrderId('00000003gh2c1zzzzzzzzzzzzr')
         await aquadex.rpc.cancelOrder(
-            1, // 0 - Bid, 1 - Ask
-            order1,
+            0, // 0 - Bid, 1 - Ask
+            orderId,
             {
                 accounts: {
                     market: marketPK,
@@ -193,7 +212,9 @@ async function main() {
         )
         res = await aquadex.account.withdrawResult.fetch(resultData2.publicKey)
         console.log(formatWithdraw(res))
+    }
 
+    if (false) {
         console.log('Limit Ask 2')
         await aquadex.rpc.limitAsk(
             new anchor.BN(10 * 10000), // Quantity
@@ -224,11 +245,12 @@ async function main() {
         console.log(formatOrder(res))
     }
 
-    if (true) {
+    if (false) {
         console.log('Limit Bid')
         await aquadex.rpc.limitBid(
-            new anchor.BN(11 * 10000),  // Quantity
-            new anchor.BN(7 * 10000),   // Price
+            false,
+            new anchor.BN(1.5 * 1000000000),  // Quantity
+            new anchor.BN(59 * 1000000),      // Price
             true,                       // Post order
             false,                      // Require filled if not posted
             new anchor.BN(0),           // Order expiry

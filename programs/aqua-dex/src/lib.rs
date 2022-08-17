@@ -297,6 +297,14 @@ fn store_struct<T: AccountSerialize>(obj: &T, acc: &AccountInfo) -> FnResult<(),
     obj.try_serialize(&mut crs)
 }
 
+#[inline]
+fn scale_price(quantity: u64, price: u64, decimal_factor: u64) -> anchor_lang::Result<u64> {
+    let mut tokens_calc: u128 = (quantity as u128).checked_mul(price as u128).ok_or(error!(ErrorCode::Overflow))?;
+    tokens_calc = tokens_calc.checked_div(decimal_factor as u128).ok_or(error!(ErrorCode::Overflow))?;
+    let tokens: u64 = u64::try_from(tokens_calc).map_err(|_| error!(ErrorCode::Overflow))?;
+    return Ok(tokens);
+}
+
 fn verify_matching_accounts(left: &Pubkey, right: &Pubkey, error_msg: Option<String>) -> anchor_lang::Result<()> {
     if *left != *right {
         if error_msg.is_some() {
@@ -449,13 +457,15 @@ fn log_rollover(
 fn valid_order(order_type: OrderDT, leaf: &LeafNode, user_key: &Pubkey, sl: &SlabPageAlloc, expired_orders: &mut Vec<u128>, clock_ts: i64) -> bool {
     let order = sl.index::<Order>(order_type as u16, leaf.slot() as usize);
     let valid_expiry: bool = order.expiry == 0 || order.expiry < clock_ts;      // Check expiry timestamp if needed
-    let valid_user: bool = leaf.owner() != *user_key;                           // Prevent trades between the same account
+    // TODO: Update before release
+    //let valid_user: bool = leaf.owner() != *user_key;                           // Prevent trades between the same account
+    let valid_user: bool = true;
     let valid = valid_expiry && valid_user;
-    /*msg!("Atellix: Found {} [{}] {} @ {} Exp: {} Key: {} OK: {}",
+    msg!("Atellix: Found {} [{}] {} @ {} Exp: {} Key: {} OK: {}",
         match order_type { OrderDT::BidOrder => "Bid", OrderDT::AskOrder => "Ask", _ => unreachable!() },
         leaf.slot().to_string(), order.amount().to_string(), Order::price(leaf.key()).to_string(),
         order.expiry.to_string(), leaf.owner().to_string(), valid.to_string(),
-    );*/
+    );
     if !valid_expiry {
         expired_orders.push(leaf.key());
     }
@@ -478,6 +488,8 @@ pub mod aqua_dex {
         inp_agent_nonce: u8,
         inp_mkt_vault_nonce: u8,
         inp_prc_vault_nonce: u8,
+        inp_mkt_decimals: u8,
+        inp_prc_decimals: u8,
         inp_expire_enable: bool,
         inp_expire_min: i64,
     ) -> anchor_lang::Result<()> {
@@ -590,9 +602,11 @@ pub mod aqua_dex {
             mkt_mint: *acc_mkt_mint.key,
             mkt_vault: *acc_mkt_vault.key,
             mkt_nonce: inp_mkt_vault_nonce,
+            mkt_decimals: inp_mkt_decimals,
             prc_mint: *acc_prc_mint.key,
             prc_vault: *acc_prc_vault.key,
             prc_nonce: inp_prc_vault_nonce,
+            prc_decimals: inp_prc_decimals,
             orders: *acc_orders.key,
             settle_0: *acc_settle1.key,
             settle_a: *acc_settle1.key,
@@ -601,6 +615,7 @@ pub mod aqua_dex {
         store_struct::<Market>(&market, acc_market)?;
 
         let state = MarketState {
+            action_counter: 0,
             order_counter: 0,
             active_bid: 0,
             active_ask: 0,
@@ -727,7 +742,11 @@ pub mod aqua_dex {
 
         msg!("Atellix: Limit Bid: {} @ {}", inp_quantity.to_string(), inp_price.to_string());
 
-        let tokens_in = inp_price * inp_quantity;
+        let mkt_decimal_base: u64 = 10;
+        let mkt_decimal_factor: u64 = mkt_decimal_base.pow(market.mkt_decimals as u32);
+        let mut tokens_in_calc: u128 = (inp_price as u128).checked_mul(inp_quantity as u128).ok_or(error!(ErrorCode::Overflow))?;
+        tokens_in_calc = tokens_in_calc.checked_div(mkt_decimal_factor as u128).ok_or(error!(ErrorCode::Overflow))?;
+        let tokens_in: u64 = u64::try_from(tokens_in_calc).map_err(|_| error!(ErrorCode::Overflow))?;
         let state_upd = &mut ctx.accounts.state;
         state_upd.prc_vault_balance = state_upd.prc_vault_balance.checked_add(tokens_in).ok_or(error!(ErrorCode::Overflow))?;
         state_upd.prc_order_balance = state_upd.prc_order_balance.checked_add(tokens_in).ok_or(error!(ErrorCode::Overflow))?;
@@ -757,7 +776,7 @@ pub mod aqua_dex {
                 // Fill order
                 if posted_qty == tokens_to_fill {         // Match the entire order exactly
                     tokens_filled = tokens_filled.checked_add(tokens_to_fill).ok_or(error!(ErrorCode::Overflow))?;
-                    let tokens_part = tokens_to_fill.checked_mul(posted_price).ok_or(error!(ErrorCode::Overflow))?;
+                    let tokens_part = scale_price(tokens_to_fill, posted_price, mkt_decimal_factor)?;
                     tokens_paid = tokens_paid.checked_add(tokens_part).ok_or(error!(ErrorCode::Overflow))?;
                     msg!("Atellix: Filling - {} @ {}", tokens_part.to_string(), posted_price.to_string());
                     map_remove(ob, DT::AskOrder, posted_node.key())?;
@@ -767,7 +786,7 @@ pub mod aqua_dex {
                 } else if posted_qty < tokens_to_fill {   // Match the entire order and continue
                     tokens_to_fill = tokens_to_fill.checked_sub(posted_qty).ok_or(error!(ErrorCode::Overflow))?;
                     tokens_filled = tokens_filled.checked_add(posted_qty).ok_or(error!(ErrorCode::Overflow))?;
-                    let tokens_part = posted_qty.checked_mul(posted_price).ok_or(error!(ErrorCode::Overflow))?;
+                    let tokens_part = scale_price(posted_qty, posted_price, mkt_decimal_factor)?;
                     tokens_paid = tokens_paid.checked_add(tokens_part).ok_or(error!(ErrorCode::Overflow))?;
                     msg!("Atellix: Filling - {} @ {}", posted_qty.to_string(), posted_price.to_string());
                     map_remove(ob, DT::AskOrder, posted_node.key())?;
@@ -775,7 +794,7 @@ pub mod aqua_dex {
                     log_settlement(market, state_upd, acc_settle1, acc_settle2, &posted_node.owner(), false, tokens_part)?;
                 } else if posted_qty > tokens_to_fill {   // Match part of the order
                     tokens_filled = tokens_filled.checked_add(tokens_to_fill).ok_or(error!(ErrorCode::Overflow))?;
-                    let tokens_part = tokens_to_fill.checked_mul(posted_price).ok_or(error!(ErrorCode::Overflow))?;
+                    let tokens_part = scale_price(tokens_to_fill, posted_price, mkt_decimal_factor)?;
                     tokens_paid = tokens_paid.checked_add(tokens_part).ok_or(error!(ErrorCode::Overflow))?;
                     msg!("Atellix: Filling - {} @ {}", tokens_to_fill.to_string(), posted_price.to_string());
                     let new_amount = posted_qty.checked_sub(tokens_to_fill).ok_or(error!(ErrorCode::Overflow))?;
@@ -853,7 +872,7 @@ pub mod aqua_dex {
                     break;
                 }
             }
-            let tokens_part = tokens_remaining.checked_mul(inp_price).ok_or(error!(ErrorCode::Overflow))?;
+            let tokens_part = scale_price(tokens_remaining, inp_price, mkt_decimal_factor)?;
             tokens_paid = tokens_paid.checked_add(tokens_part).ok_or(error!(ErrorCode::Overflow))?;
             result.set_tokens_posted(tokens_remaining);
             result.set_order_id(order_id);
@@ -1204,11 +1223,9 @@ pub mod aqua_dex {
         let mut result = WithdrawResult { mkt_tokens: 0, prc_tokens: 0 };
         let tokens_out = match side {
             Side::Bid => {
-                let total_res = order.amount().checked_mul(Order::price(leaf.key()));
-                if total_res.is_none() {
-                    return Err(ErrorCode::Overflow.into());
-                }
-                let total = total_res.unwrap();
+                let mkt_decimal_base: u64 = 10;
+                let mkt_decimal_factor: u64 = mkt_decimal_base.pow(market.mkt_decimals as u32);
+                let total = scale_price(order.amount(), Order::price(leaf.key()), mkt_decimal_factor)?;
                 result.set_prc_tokens(total);
                 state.prc_vault_balance = state.prc_vault_balance.checked_sub(total).ok_or(error!(ErrorCode::Overflow))?;
                 state.prc_order_balance = state.prc_order_balance.checked_sub(total).ok_or(error!(ErrorCode::Overflow))?;
@@ -1449,9 +1466,11 @@ pub struct Market {
     pub mkt_mint: Pubkey,               // Token mint for market tokens (Token A)
     pub mkt_vault: Pubkey,              // Vault for Token A (an associated token account controlled by this program)
     pub mkt_nonce: u8,                  // Vault nonce for Token A
+    pub mkt_decimals: u8,               // Token A decimals
     pub prc_mint: Pubkey,               // Token mint for pricing tokens (Token B)
     pub prc_vault: Pubkey,              // Vault for Token B
     pub prc_nonce: u8,                  // Vault nonce for Token B
+    pub prc_decimals: u8,               // Token B decimals
     pub orders: Pubkey,                 // Orderbook Bid/Ask entries
     pub settle_0: Pubkey,               // The start of the settlement log
     pub settle_a: Pubkey,               // Settlement log 1 (the active log)
@@ -1460,6 +1479,8 @@ pub struct Market {
 
 #[account]
 pub struct MarketState {
+    // TODO: Implement action_counter
+    pub action_counter: u64,            // Action ids
     pub order_counter: u64,             // Order index for Critmap ids (lower 64 bits)
     pub active_bid: u64,                // Active bid orders in the orderbook
     pub active_ask: u64,                // Active ask orders in the orderbook

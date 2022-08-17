@@ -51,8 +51,8 @@ async function createTokenMint() {
 async function main() {
     //var mint1 = await createTokenMint()
     //var mint2 = await createTokenMint()
-    var mint1 = '3sd64AZF5fAC83i7wJ44Jxo145J6oE9fT2of6MtBjBeK'
-    var mint2 = '3dkM9fyZ6AADz4SZLWh29rgrdwsLwKgubyM74wJzLdBs'
+    var mint1 = 'So11111111111111111111111111111111111111112'
+    var mint2 = 'Gh9ZwEmdLJ8DscKNTkTqPbNwLNNBjuSzaG9Vp2KGtKJr'
     console.log("Mints: " + mint1 + " " + mint2)
     const tokenMint1 = new PublicKey(mint1)
     const tokenMint2 = new PublicKey(mint2)
@@ -81,6 +81,9 @@ async function main() {
     const marketAgent = await programAddress([market.publicKey.toBuffer()])
     const tokenVault1 = await associatedTokenAddress(new PublicKey(marketAgent.pubkey), tokenMint1)
     const tokenVault2 = await associatedTokenAddress(new PublicKey(marketAgent.pubkey), tokenMint2)
+
+    console.log("Market Size: " + aquadex.account.market.size)
+    console.log("MarketState Size: " + aquadex.account.marketState.size)
 
     var tx = new anchor.web3.Transaction()
     tx.add(anchor.web3.SystemProgram.createAccount({
@@ -125,6 +128,8 @@ async function main() {
         marketAgent.nonce,
         tokenVault1.nonce,
         tokenVault2.nonce,
+        9,
+        6,
         true,                   // Expire enable
         new anchor.BN(1),       // Min expire
         {
