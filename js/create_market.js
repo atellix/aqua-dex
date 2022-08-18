@@ -124,12 +124,14 @@ async function main() {
     await provider.send(tx, [market, marketState, orders, settle1, settle2])
 
     console.log('Create Market')
-    await aquadex.rpc.createMarket(
+    console.log(await aquadex.rpc.createMarket(
         marketAgent.nonce,
         tokenVault1.nonce,
         tokenVault2.nonce,
         9,
         6,
+        0,
+        0,
         true,                   // Expire enable
         new anchor.BN(1),       // Min expire
         {
@@ -151,7 +153,7 @@ async function main() {
                 sysRent: SYSVAR_RENT_PUBKEY,
             }
         }
-    )
+    ))
 
     try {
         await fs.writeFile('market.json', JSON.stringify(writeData, null, 4))

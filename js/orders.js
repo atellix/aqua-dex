@@ -154,7 +154,7 @@ async function main() {
 
     var order1
 
-    if (false) {
+    if (true) {
         console.log('Limit Ask 1')
         console.log(await aquadex.rpc.limitAsk(
             false,
@@ -187,7 +187,7 @@ async function main() {
         console.log(formatOrder(res))
     }
 
-    if (true) {
+    if (false) {
         console.log('Cancel Order 1')
         var orderId = decodeOrderId('00000003gh2c1zzzzzzzzzzzzr')
         await aquadex.rpc.cancelOrder(
@@ -245,9 +245,9 @@ async function main() {
         console.log(formatOrder(res))
     }
 
-    if (false) {
+    if (true) {
         console.log('Limit Bid')
-        await aquadex.rpc.limitBid(
+        console.log(await aquadex.rpc.limitBid(
             false,
             new anchor.BN(1.5 * 1000000000),  // Quantity
             new anchor.BN(59 * 1000000),      // Price
@@ -272,7 +272,7 @@ async function main() {
                 },
                 signers: [resultData1],
             }
-        )
+        ))
         res = await aquadex.account.tradeResult.fetch(resultData1.publicKey)
         console.log(formatOrder(res))
     }

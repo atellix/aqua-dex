@@ -4,7 +4,7 @@ use num_enum::{ TryFromPrimitive, IntoPrimitive };
 use arrayref::{ mut_array_refs };
 use anchor_lang::prelude::*;
 use anchor_spl::token::{ self, Transfer, Token };
-use anchor_spl::associated_token::{ AssociatedToken };
+use anchor_spl::associated_token::{ self, AssociatedToken };
 use solana_program::{
     sysvar, system_program,
     program::{ invoke }, clock::Clock,
@@ -27,10 +27,17 @@ pub const MAX_EVICTIONS: u32 = 10;      // Max number of orders to evict before 
 pub const MAX_EXPIRATIONS: u32 = 10;    // Max number of expired orders to remove before proceeding with current order
 
 #[repr(u8)]
-#[derive(PartialEq, Debug, Eq, Copy, Clone, TryFromPrimitive)]
+#[derive(PartialEq, Debug, Eq, Copy, Clone, TryFromPrimitive, IntoPrimitive)]
 pub enum Side {
     Bid = 0,
     Ask = 1,
+}
+
+#[repr(u8)]
+#[derive(PartialEq, Debug, Eq, Copy, Clone, TryFromPrimitive, IntoPrimitive)]
+pub enum MintType {
+    SPLToken = 0,
+    AtxSecurityToken = 1,
 }
 
 #[repr(u16)]
@@ -471,6 +478,55 @@ fn valid_order(order_type: OrderDT, leaf: &LeafNode, user_key: &Pubkey, sl: &Sla
     valid
 }
 
+fn perform_transfer<'info>(
+    accounts: &[AccountInfo<'_>],
+    mint_type: MintType,
+    amount: u64,
+    from: &AccountInfo<'info>,
+    to: &AccountInfo<'info>,
+    auth: &AccountInfo<'info>,
+    spl_prog: &AccountInfo<'info>,
+    //ast_prog: &AccountInfo<'info>,
+    //ast_offset: usize,
+) -> anchor_lang::Result<()> {
+    if mint_type == MintType::SPLToken {
+        let in_accounts = Transfer {
+            from: from.clone(),
+            to: to.clone(),
+            authority: auth.clone(),
+        };
+        let in_ctx = CpiContext::new(spl_prog.clone(), in_accounts);
+        token::transfer(in_ctx, amount)?;
+        return Ok(());
+    }
+    Err(error!(ErrorCode::InvalidParameters))
+}
+
+fn perform_signed_transfer<'info>(
+    accounts: &[AccountInfo<'_>],
+    signer: &'_ [&'_ [&'_ [u8]]],
+    mint_type: MintType,
+    amount: u64,
+    from: &AccountInfo<'info>,
+    to: &AccountInfo<'info>,
+    auth: &AccountInfo<'info>,
+    spl_prog: &AccountInfo<'info>,
+    //ast_prog: &AccountInfo<'info>,
+    //ast_offset: usize,
+) -> anchor_lang::Result<()> {
+    if mint_type == MintType::SPLToken {
+        let in_accounts = Transfer {
+            from: from.clone(),
+            to: to.clone(),
+            authority: auth.clone(),
+        };
+        let in_ctx = CpiContext::new_with_signer(spl_prog.clone(), in_accounts, signer);
+        token::transfer(in_ctx, amount)?;
+        return Ok(());
+    }
+    Err(error!(ErrorCode::InvalidParameters))
+}
+
 #[program]
 pub mod aqua_dex {
     use super::*;
@@ -489,6 +545,8 @@ pub mod aqua_dex {
         inp_prc_vault_nonce: u8,
         inp_mkt_decimals: u8,
         inp_prc_decimals: u8,
+        inp_mkt_mint_type: u8,
+        inp_prc_mint_type: u8,
         inp_expire_enable: bool,
         inp_expire_min: i64,
     ) -> anchor_lang::Result<()> {
@@ -501,29 +559,31 @@ pub mod aqua_dex {
         let acc_prc_mint = &ctx.accounts.prc_mint.to_account_info();
         let acc_prc_vault = &ctx.accounts.prc_vault.to_account_info();
 
-        // Verify market agent
-        let acc_agent_expected = Pubkey::create_program_address(&[acc_market.key.as_ref(), &[inp_agent_nonce]], ctx.program_id)
-            .map_err(|_| ErrorCode::InvalidDerivedAccount)?;
-        verify_matching_accounts(acc_agent.key, &acc_agent_expected, Some(String::from("Invalid market agent")))?;
+        let mkt_mint_type: MintType = MintType::try_from(inp_mkt_mint_type).map_err(|_| ErrorCode::InvalidParameters)?;
+        let prc_mint_type: MintType = MintType::try_from(inp_prc_mint_type).map_err(|_| ErrorCode::InvalidParameters)?;
 
-        // Verify associated token (market)
-        let derived_mkt_vault = Pubkey::create_program_address(
-            &[&acc_agent.key.to_bytes(), &Token::id().to_bytes(), &acc_mkt_mint.key.to_bytes(), &[inp_mkt_vault_nonce]],
-            &AssociatedToken::id(),
-        ).map_err(|_| ErrorCode::InvalidDerivedAccount)?;
-        if derived_mkt_vault != *acc_mkt_vault.key {
-            msg!("Invalid market token vault");
-            return Err(ErrorCode::InvalidDerivedAccount.into());
+        if mkt_mint_type == MintType::SPLToken {
+            // Verify associated token (market)
+            let derived_mkt_vault = Pubkey::create_program_address(
+                &[&acc_agent.key.to_bytes(), &Token::id().to_bytes(), &acc_mkt_mint.key.to_bytes(), &[inp_mkt_vault_nonce]],
+                &AssociatedToken::id(),
+            ).map_err(|_| ErrorCode::InvalidDerivedAccount)?;
+            if derived_mkt_vault != *acc_mkt_vault.key {
+                msg!("Invalid market token vault");
+                return Err(ErrorCode::InvalidDerivedAccount.into());
+            }
         }
 
-        // Verify associated token (pricing)
-        let derived_prc_vault = Pubkey::create_program_address(
-            &[&acc_agent.key.to_bytes(), &Token::id().to_bytes(), &acc_prc_mint.key.to_bytes(), &[inp_prc_vault_nonce]],
-            &AssociatedToken::id(),
-        ).map_err(|_| ErrorCode::InvalidDerivedAccount)?;
-        if derived_prc_vault != *acc_prc_vault.key {
-            msg!("Invalid pricing token vault");
-            return Err(ErrorCode::InvalidDerivedAccount.into());
+        if prc_mint_type == MintType::SPLToken {
+            // Verify associated token (pricing)
+            let derived_prc_vault = Pubkey::create_program_address(
+                &[&acc_agent.key.to_bytes(), &Token::id().to_bytes(), &acc_prc_mint.key.to_bytes(), &[inp_prc_vault_nonce]],
+                &AssociatedToken::id(),
+            ).map_err(|_| ErrorCode::InvalidDerivedAccount)?;
+            if derived_prc_vault != *acc_prc_vault.key {
+                msg!("Invalid pricing token vault");
+                return Err(ErrorCode::InvalidDerivedAccount.into());
+            }
         }
 
         // Check expiration parameters
@@ -537,48 +597,52 @@ pub mod aqua_dex {
         let acc_sys = &ctx.accounts.sys_prog.to_account_info();
         let acc_rent = &ctx.accounts.sys_rent.to_account_info();
 
-        let instr1 = Instruction {
-            program_id: AssociatedToken::id(),
-            accounts: vec![
-                AccountMeta::new(*acc_manager.key, true),
-                AccountMeta::new(*acc_mkt_vault.key, false),
-                AccountMeta::new_readonly(*acc_agent.key, false),
-                AccountMeta::new_readonly(*acc_mkt_mint.key, false),
-                AccountMeta::new_readonly(solana_program::system_program::id(), false),
-                AccountMeta::new_readonly(Token::id(), false),
-                AccountMeta::new_readonly(sysvar::rent::id(), false),
-            ],
-            data: vec![],
-        };
-        let res1 = invoke(&instr1, &[
-            acc_manager.clone(), acc_mkt_vault.clone(), acc_agent.clone(), acc_mkt_mint.clone(),
-            acc_spl.clone(), acc_sys.clone(), acc_rent.clone(),
-        ]);
-        if res1.is_err() {
-            msg!("Create associated token failed for market token");
-            return Err(ErrorCode::ExternalError.into());
+        if mkt_mint_type == MintType::SPLToken {
+            let instr1 = Instruction {
+                program_id: AssociatedToken::id(),
+                accounts: vec![
+                    AccountMeta::new(*acc_manager.key, true),
+                    AccountMeta::new(*acc_mkt_vault.key, false),
+                    AccountMeta::new_readonly(*acc_agent.key, false),
+                    AccountMeta::new_readonly(*acc_mkt_mint.key, false),
+                    AccountMeta::new_readonly(solana_program::system_program::id(), false),
+                    AccountMeta::new_readonly(Token::id(), false),
+                    AccountMeta::new_readonly(sysvar::rent::id(), false),
+                ],
+                data: vec![],
+            };
+            let res1 = invoke(&instr1, &[
+                acc_manager.clone(), acc_mkt_vault.clone(), acc_agent.clone(), acc_mkt_mint.clone(),
+                acc_spl.clone(), acc_sys.clone(), acc_rent.clone(),
+            ]);
+            if res1.is_err() {
+                msg!("Create associated token failed for market token");
+                return Err(ErrorCode::ExternalError.into());
+            }
         }
 
-        let instr2 = Instruction {
-            program_id: AssociatedToken::id(),
-            accounts: vec![
-                AccountMeta::new(*acc_manager.key, true),
-                AccountMeta::new(*acc_prc_vault.key, false),
-                AccountMeta::new_readonly(*acc_agent.key, false),
-                AccountMeta::new_readonly(*acc_prc_mint.key, false),
-                AccountMeta::new_readonly(solana_program::system_program::id(), false),
-                AccountMeta::new_readonly(Token::id(), false),
-                AccountMeta::new_readonly(sysvar::rent::id(), false),
-            ],
-            data: vec![],
-        };
-        let res2 = invoke(&instr2, &[
-            acc_manager.clone(), acc_prc_vault.clone(), acc_agent.clone(), acc_prc_mint.clone(),
-            acc_spl.clone(), acc_sys.clone(), acc_rent.clone(),
-        ]);
-        if res2.is_err() {
-            msg!("Create associated token failed for pricing token");
-            return Err(ErrorCode::ExternalError.into());
+        if prc_mint_type == MintType::SPLToken {
+            let instr2 = Instruction {
+                program_id: AssociatedToken::id(),
+                accounts: vec![
+                    AccountMeta::new(*acc_manager.key, true),
+                    AccountMeta::new(*acc_prc_vault.key, false),
+                    AccountMeta::new_readonly(*acc_agent.key, false),
+                    AccountMeta::new_readonly(*acc_prc_mint.key, false),
+                    AccountMeta::new_readonly(solana_program::system_program::id(), false),
+                    AccountMeta::new_readonly(Token::id(), false),
+                    AccountMeta::new_readonly(sysvar::rent::id(), false),
+                ],
+                data: vec![],
+            };
+            let res2 = invoke(&instr2, &[
+                acc_manager.clone(), acc_prc_vault.clone(), acc_agent.clone(), acc_prc_mint.clone(),
+                acc_spl.clone(), acc_sys.clone(), acc_rent.clone(),
+            ]);
+            if res2.is_err() {
+                msg!("Create associated token failed for pricing token");
+                return Err(ErrorCode::ExternalError.into());
+            }
         }
 
         let acc_orders = &ctx.accounts.orders.to_account_info();
@@ -599,10 +663,12 @@ pub mod aqua_dex {
             mkt_vault: *acc_mkt_vault.key,
             mkt_nonce: inp_mkt_vault_nonce,
             mkt_decimals: inp_mkt_decimals,
+            mkt_mint_type: inp_mkt_mint_type,
             prc_mint: *acc_prc_mint.key,
             prc_vault: *acc_prc_vault.key,
             prc_nonce: inp_prc_vault_nonce,
             prc_decimals: inp_prc_decimals,
+            prc_mint_type: inp_prc_mint_type,
             orders: *acc_orders.key,
             settle_0: *acc_settle1.key,
             settle_a: *acc_settle1.key,
@@ -657,14 +723,14 @@ pub mod aqua_dex {
         settle2_slab.allocate::<CritMapHeader, AnyNode>(SettleDT::AccountMap as u16, MAX_ACCOUNTS as usize).expect("Failed to allocate");
         settle2_slab.allocate::<SlabVec, AccountEntry>(SettleDT::Account as u16, MAX_ACCOUNTS as usize).expect("Failed to allocate");
 
-        msg!("Atellix: Account Entry Size: {}", size_of::<AccountEntry>());
+        //msg!("Atellix: Account Entry Size: {}", size_of::<AccountEntry>());
 
         msg!("Atellix: Created AquaDEX market");
 
         Ok(())
     }
 
-    pub fn limit_bid(ctx: Context<OrderContext>,
+    pub fn limit_bid<'a, 'b, 'c, 'info>(ctx: Context<'a, 'b, 'c, 'info, OrderContext>,
         inp_rollover: bool, // Perform settlement log rollover
         inp_quantity: u64,
         inp_price: u64,
@@ -775,6 +841,18 @@ pub mod aqua_dex {
                     let tokens_part = scale_price(tokens_to_fill, posted_price, mkt_decimal_factor)?;
                     tokens_paid = tokens_paid.checked_add(tokens_part).ok_or(error!(ErrorCode::Overflow))?;
                     msg!("Atellix: Filling - {} @ {}", tokens_part.to_string(), posted_price.to_string());
+                    msg!("atellix-log");
+                    emit!(MatchEvent {
+                        event_type: 0,
+                        market: market.key(),
+                        maker_order_id: posted_node.key(),
+                        maker_filled: true,
+                        maker: posted_node.owner(),
+                        taker: acc_user.key(),
+                        taker_side: Side::Bid as u8,
+                        amount: tokens_to_fill,
+                        price: posted_price,
+                    });
                     map_remove(ob, DT::AskOrder, posted_node.key())?;
                     Order::free_index(ob, DT::AskOrder, posted_node.slot())?;
                     log_settlement(market, state_upd, acc_settle1, acc_settle2, &posted_node.owner(), false, tokens_part)?;
@@ -785,6 +863,18 @@ pub mod aqua_dex {
                     let tokens_part = scale_price(posted_qty, posted_price, mkt_decimal_factor)?;
                     tokens_paid = tokens_paid.checked_add(tokens_part).ok_or(error!(ErrorCode::Overflow))?;
                     msg!("Atellix: Filling - {} @ {}", posted_qty.to_string(), posted_price.to_string());
+                    msg!("atellix-log");
+                    emit!(MatchEvent {
+                        event_type: 0,
+                        market: market.key(),
+                        maker_order_id: posted_node.key(),
+                        maker_filled: true,
+                        maker: posted_node.owner(),
+                        taker: acc_user.key(),
+                        taker_side: Side::Bid as u8,
+                        amount: posted_qty,
+                        price: posted_price,
+                    });
                     map_remove(ob, DT::AskOrder, posted_node.key())?;
                     Order::free_index(ob, DT::AskOrder, posted_node.slot())?;
                     log_settlement(market, state_upd, acc_settle1, acc_settle2, &posted_node.owner(), false, tokens_part)?;
@@ -793,6 +883,18 @@ pub mod aqua_dex {
                     let tokens_part = scale_price(tokens_to_fill, posted_price, mkt_decimal_factor)?;
                     tokens_paid = tokens_paid.checked_add(tokens_part).ok_or(error!(ErrorCode::Overflow))?;
                     msg!("Atellix: Filling - {} @ {}", tokens_to_fill.to_string(), posted_price.to_string());
+                    msg!("atellix-log");
+                    emit!(MatchEvent {
+                        event_type: 0,
+                        market: market.key(),
+                        maker_order_id: posted_node.key(),
+                        maker_filled: false,
+                        maker: posted_node.owner(),
+                        taker: acc_user.key(),
+                        taker_side: Side::Bid as u8,
+                        amount: tokens_to_fill,
+                        price: posted_price,
+                    });
                     let new_amount = posted_qty.checked_sub(tokens_to_fill).ok_or(error!(ErrorCode::Overflow))?;
                     ob.index_mut::<Order>(OrderDT::AskOrder as u16, posted_node.slot() as usize).set_amount(new_amount);
                     log_settlement(market, state_upd, acc_settle1, acc_settle2, &posted_node.owner(), false, tokens_part)?;
@@ -880,22 +982,22 @@ pub mod aqua_dex {
         state_upd.prc_vault_balance = state_upd.prc_vault_balance.checked_sub(discount).ok_or(error!(ErrorCode::Overflow))?;
         state_upd.prc_order_balance = state_upd.prc_order_balance.checked_sub(discount).ok_or(error!(ErrorCode::Overflow))?;
 
-        // TODO: Pay for settlement log space
-
-        // Send tokens to the vault
-        let in_accounts = Transfer {
-            from: ctx.accounts.user_prc_token.to_account_info(),
-            to: ctx.accounts.prc_vault.to_account_info(),
-            authority: ctx.accounts.user.to_account_info(),
-        };
-        let cpi_prog = ctx.accounts.spl_token_prog.clone();
-        let in_ctx = CpiContext::new(cpi_prog, in_accounts);
-        /*msg!("Atellix: Pricing Token Vault Deposit: {}", tokens_in.to_string());
+        /*msg!("Atellix: Pricing Token Vault Deposit: {}", total_cost.to_string());
         msg!("Atellix: Pricing Token Vault Balance: {} (Orderbook: {})",
             state_upd.prc_vault_balance,
             state_upd.prc_order_balance,
         );*/
-        token::transfer(in_ctx, total_cost)?;
+
+        // TODO: Pay for settlement log space
+
+        // Send tokens to the vault
+        let mint_type = MintType::try_from(market.prc_mint_type).map_err(|_| ErrorCode::InvalidParameters)?;
+        perform_transfer(ctx.remaining_accounts, mint_type, total_cost,
+            &ctx.accounts.user_prc_token.to_account_info(),  // From
+            &ctx.accounts.prc_vault.to_account_info(),       // To
+            &ctx.accounts.user.to_account_info(),            // Auth
+            &ctx.accounts.spl_token_prog.to_account_info(),  // SPL Token Program
+        )?;
         result.set_tokens_deposited(total_cost);
 
         if tokens_filled > 0 {
@@ -903,24 +1005,21 @@ pub mod aqua_dex {
             state_upd.mkt_vault_balance = state_upd.mkt_vault_balance.checked_sub(tokens_filled).ok_or(error!(ErrorCode::Overflow))?;
             state_upd.mkt_order_balance = state_upd.mkt_order_balance.checked_sub(tokens_filled).ok_or(error!(ErrorCode::Overflow))?;
 
-            let seeds = &[
-                market.to_account_info().key.as_ref(),
-                &[market.agent_nonce],
-            ];
-            let signer = &[&seeds[..]];
-            let in_accounts = Transfer {
-                from: ctx.accounts.mkt_vault.to_account_info(),
-                to: ctx.accounts.user_mkt_token.to_account_info(),
-                authority: ctx.accounts.agent.to_account_info(),
-            };
-            let cpi_prog = ctx.accounts.spl_token_prog.clone();
-            let in_ctx = CpiContext::new_with_signer(cpi_prog, in_accounts, signer);
             /*msg!("Atellix: Market Token Vault Withdraw: {}", tokens_filled.to_string());
             msg!("Atellix: Market Token Vault Balance: {} (Orderbook: {})",
                 state_upd.mkt_vault_balance,
                 state_upd.mkt_order_balance,
             );*/
-            token::transfer(in_ctx, tokens_filled)?;
+
+            let seeds = &[market.to_account_info().key.as_ref(), &[market.agent_nonce]];
+            let signer = &[&seeds[..]];
+            let mint_type = MintType::try_from(market.mkt_mint_type).map_err(|_| ErrorCode::InvalidParameters)?;
+            perform_signed_transfer(ctx.remaining_accounts, signer, mint_type, tokens_filled,
+                &ctx.accounts.mkt_vault.to_account_info(),          // From
+                &ctx.accounts.user_mkt_token.to_account_info(),     // To
+                &ctx.accounts.agent.to_account_info(),              // Auth
+                &ctx.accounts.spl_token_prog.to_account_info(),     // SPL Token Program
+            )?;
         }
         store_struct::<TradeResult>(&result, acc_result)?;
         Ok(())
@@ -1007,6 +1106,9 @@ pub mod aqua_dex {
         let orderbook_data: &mut[u8] = &mut acc_orders.try_borrow_mut_data()?;
         let ob = SlabPageAlloc::new(orderbook_data);
 
+        let mkt_decimal_base: u64 = 10;
+        let mkt_decimal_factor: u64 = mkt_decimal_base.pow(market.mkt_decimals as u32);
+
         // Check if order can be filled
         let mut tokens_to_fill: u64 = inp_quantity;
         let mut tokens_filled: u64 = 0;
@@ -1029,9 +1131,21 @@ pub mod aqua_dex {
                 // Fill order
                 if posted_qty == tokens_to_fill {         // Match the entire order exactly
                     tokens_filled = tokens_filled.checked_add(tokens_to_fill).ok_or(error!(ErrorCode::Overflow))?;
-                    let tokens_part = tokens_to_fill.checked_mul(posted_price).ok_or(error!(ErrorCode::Overflow))?;
+                    let tokens_part = scale_price(tokens_to_fill, posted_price, mkt_decimal_factor)?;
                     tokens_received = tokens_received.checked_add(tokens_part).ok_or(error!(ErrorCode::Overflow))?;
                     msg!("Atellix: Filling - {} @ {}", tokens_part.to_string(), posted_price.to_string());
+                    msg!("atellix-log");
+                    emit!(MatchEvent {
+                        event_type: 0,
+                        market: market.key(),
+                        maker_order_id: posted_node.key(),
+                        maker_filled: true,
+                        maker: posted_node.owner(),
+                        taker: acc_user.key(),
+                        taker_side: Side::Ask as u8,
+                        amount: tokens_to_fill,
+                        price: posted_price,
+                    });
                     map_remove(ob, DT::BidOrder, posted_node.key())?;
                     Order::free_index(ob, DT::BidOrder, posted_node.slot())?;
                     log_settlement(market, state_upd, acc_settle1, acc_settle2, &posted_node.owner(), true, tokens_to_fill)?;
@@ -1039,17 +1153,41 @@ pub mod aqua_dex {
                 } else if posted_qty < tokens_to_fill {   // Match the entire order and continue
                     tokens_to_fill = tokens_to_fill.checked_sub(posted_qty).ok_or(error!(ErrorCode::Overflow))?;
                     tokens_filled = tokens_filled.checked_add(posted_qty).ok_or(error!(ErrorCode::Overflow))?;
-                    let tokens_part = posted_qty.checked_mul(posted_price).ok_or(error!(ErrorCode::Overflow))?;
+                    let tokens_part = scale_price(posted_qty, posted_price, mkt_decimal_factor)?;
                     tokens_received = tokens_received.checked_add(tokens_part).ok_or(error!(ErrorCode::Overflow))?;
                     msg!("Atellix: Filling - {} @ {}", posted_qty.to_string(), posted_price.to_string());
+                    msg!("atellix-log");
+                    emit!(MatchEvent {
+                        event_type: 0,
+                        market: market.key(),
+                        maker_order_id: posted_node.key(),
+                        maker_filled: true,
+                        maker: posted_node.owner(),
+                        taker: acc_user.key(),
+                        taker_side: Side::Ask as u8,
+                        amount: posted_qty,
+                        price: posted_price,
+                    });
                     map_remove(ob, DT::BidOrder, posted_node.key())?;
                     Order::free_index(ob, DT::BidOrder, posted_node.slot())?;
                     log_settlement(market, state_upd, acc_settle1, acc_settle2, &posted_node.owner(), true, posted_qty)?;
                 } else if posted_qty > tokens_to_fill {   // Match part of the order
                     tokens_filled = tokens_filled.checked_add(tokens_to_fill).ok_or(error!(ErrorCode::Overflow))?;
-                    let tokens_part = tokens_to_fill.checked_mul(posted_price).ok_or(error!(ErrorCode::Overflow))?;
+                    let tokens_part = scale_price(tokens_to_fill, posted_price, mkt_decimal_factor)?;
                     tokens_received = tokens_received.checked_add(tokens_part).ok_or(error!(ErrorCode::Overflow))?;
                     msg!("Atellix: Filling - {} @ {}", tokens_to_fill.to_string(), posted_price.to_string());
+                    msg!("atellix-log");
+                    emit!(MatchEvent {
+                        event_type: 0,
+                        market: market.key(),
+                        maker_order_id: posted_node.key(),
+                        maker_filled: false,
+                        maker: posted_node.owner(),
+                        taker: acc_user.key(),
+                        taker_side: Side::Ask as u8,
+                        amount: tokens_to_fill,
+                        price: posted_price,
+                    });
                     let new_amount = posted_qty.checked_sub(tokens_to_fill).ok_or(error!(ErrorCode::Overflow))?;
                     ob.index_mut::<Order>(OrderDT::BidOrder as u16, posted_node.slot() as usize).set_amount(new_amount);
                     log_settlement(market, state_upd, acc_settle1, acc_settle2, &posted_node.owner(), true, tokens_to_fill)?;
@@ -1132,47 +1270,48 @@ pub mod aqua_dex {
             msg!("Atellix: Posted Ask [{}] {} @ {}", order_idx.to_string(), inp_quantity.to_string(), inp_price.to_string());
         }
 
-        // TODO: Pay for settlement log space
-
-        // Send tokens to the vault
-        let in_accounts = Transfer {
-            from: ctx.accounts.user_mkt_token.to_account_info(),
-            to: ctx.accounts.mkt_vault.to_account_info(),
-            authority: ctx.accounts.user.to_account_info(),
-        };
-        let cpi_prog = ctx.accounts.spl_token_prog.clone();
-        let in_ctx = CpiContext::new(cpi_prog, in_accounts);
         /*msg!("Atellix: Market Token Vault Deposit: {}", inp_quantity.to_string());
         msg!("Atellix: Market Token Vault Balance: {} (Orderbook: {})",
             state_upd.mkt_vault_balance,
             state_upd.mkt_order_balance,
         );*/
-        token::transfer(in_ctx, inp_quantity)?;
+
+        // TODO: Pay for settlement log space
+
+        // Send tokens to the vault
+        let mint_type = MintType::try_from(market.mkt_mint_type).map_err(|_| ErrorCode::InvalidParameters)?;
+        perform_transfer(ctx.remaining_accounts, mint_type, inp_quantity,
+            &ctx.accounts.user_mkt_token.to_account_info(),  // From
+            &ctx.accounts.mkt_vault.to_account_info(),       // To
+            &ctx.accounts.user.to_account_info(),            // Auth
+            &ctx.accounts.spl_token_prog.to_account_info(),  // SPL Token Program
+        )?;
         result.set_tokens_deposited(inp_quantity);
 
         if tokens_filled > 0 {
+            msg!("Atellix: Pricing Token Vault Withdraw: {}", tokens_received.to_string());
+
             // Withdraw tokens from the vault
             state_upd.prc_vault_balance = state_upd.prc_vault_balance.checked_sub(tokens_received).ok_or(error!(ErrorCode::Overflow))?;
             state_upd.prc_order_balance = state_upd.prc_order_balance.checked_sub(tokens_received).ok_or(error!(ErrorCode::Overflow))?;
+
+            /*msg!("Atellix: Pricing Token Vault Balance: {} (Orderbook: {})",
+                state_upd.prc_vault_balance,
+                state_upd.prc_order_balance,
+            );*/
 
             let seeds = &[
                 market.to_account_info().key.as_ref(),
                 &[market.agent_nonce],
             ];
             let signer = &[&seeds[..]];
-            let in_accounts = Transfer {
-                from: ctx.accounts.prc_vault.to_account_info(),
-                to: ctx.accounts.user_prc_token.to_account_info(),
-                authority: ctx.accounts.agent.to_account_info(),
-            };
-            let cpi_prog = ctx.accounts.spl_token_prog.clone();
-            let in_ctx = CpiContext::new_with_signer(cpi_prog, in_accounts, signer);
-            /*msg!("Atellix: Pricing Token Vault Withdraw: {}", tokens_filled.to_string());
-            msg!("Atellix: Pricing Token Vault Balance: {} (Orderbook: {})",
-                state_upd.prc_vault_balance,
-                state_upd.prc_order_balance,
-            );*/
-            token::transfer(in_ctx, tokens_received)?;
+            let mint_type = MintType::try_from(market.prc_mint_type).map_err(|_| ErrorCode::InvalidParameters)?;
+            perform_signed_transfer(ctx.remaining_accounts, signer, mint_type, tokens_received,
+                &ctx.accounts.prc_vault.to_account_info(),          // From
+                &ctx.accounts.user_prc_token.to_account_info(),     // To
+                &ctx.accounts.agent.to_account_info(),              // Auth
+                &ctx.accounts.spl_token_prog.to_account_info(),     // SPL Token Program
+            )?;
         }
         store_struct::<TradeResult>(&result, acc_result)?;
         Ok(())
@@ -1237,26 +1376,26 @@ pub mod aqua_dex {
         };
         map_remove(sl, order_type, leaf.key())?;
         Order::free_index(sl, order_type, leaf.slot())?;
-        let in_accounts = match side {
-            Side::Bid => Transfer {
-                from: ctx.accounts.prc_vault.to_account_info(),
-                to: ctx.accounts.user_prc_token.to_account_info(),
-                authority: ctx.accounts.agent.to_account_info(),
-            },
-            Side::Ask => Transfer {
-                from: ctx.accounts.mkt_vault.to_account_info(),
-                to: ctx.accounts.user_mkt_token.to_account_info(),
-                authority: ctx.accounts.agent.to_account_info(),
-            },
-        };
-        let seeds = &[
-            ctx.accounts.market.to_account_info().key.as_ref(),
-            &[market.agent_nonce],
-        ];
+
+        let seeds = &[ctx.accounts.market.to_account_info().key.as_ref(), &[market.agent_nonce]];
         let signer = &[&seeds[..]];
-        let cpi_prog = ctx.accounts.spl_token_prog.clone();
-        let in_ctx = CpiContext::new_with_signer(cpi_prog, in_accounts, signer);
-        token::transfer(in_ctx, tokens_out)?;
+        if side == Side::Bid {
+            let mint_type = MintType::try_from(market.prc_mint_type).map_err(|_| ErrorCode::InvalidParameters)?;
+            perform_signed_transfer(ctx.remaining_accounts, signer, mint_type, tokens_out,
+                &ctx.accounts.prc_vault.to_account_info(),          // From
+                &ctx.accounts.user_prc_token.to_account_info(),     // To
+                &ctx.accounts.agent.to_account_info(),              // Auth
+                &ctx.accounts.spl_token_prog.to_account_info(),     // SPL Token Program
+            )?;
+        } else if side == Side::Ask {
+            let mint_type = MintType::try_from(market.mkt_mint_type).map_err(|_| ErrorCode::InvalidParameters)?;
+            perform_signed_transfer(ctx.remaining_accounts, signer, mint_type, tokens_out,
+                &ctx.accounts.mkt_vault.to_account_info(),          // From
+                &ctx.accounts.user_mkt_token.to_account_info(),     // To
+                &ctx.accounts.agent.to_account_info(),              // Auth
+                &ctx.accounts.spl_token_prog.to_account_info(),     // SPL Token Program
+            )?;
+        }
         store_struct::<WithdrawResult>(&result, acc_result)?;
         Ok(())
     }
@@ -1287,35 +1426,30 @@ pub mod aqua_dex {
         if has_item.is_some() {
             let log_node = has_item.unwrap();
             let log_entry = sl.index::<AccountEntry>(SettleDT::Account as u16, log_node.slot() as usize);
-            let seeds = &[
-                ctx.accounts.market.to_account_info().key.as_ref(),
-                &[market.agent_nonce],
-            ];
+            let seeds = &[ctx.accounts.market.to_account_info().key.as_ref(), &[market.agent_nonce]];
             let signer = &[&seeds[..]];
             let mut result = WithdrawResult { mkt_tokens: 0, prc_tokens: 0 };
             if log_entry.mkt_token_balance() > 0 {
                 result.set_mkt_tokens(log_entry.mkt_token_balance());
-                let in_accounts = Transfer {
-                    from: ctx.accounts.mkt_vault.to_account_info(),
-                    to: ctx.accounts.user_mkt_token.to_account_info(),
-                    authority: ctx.accounts.agent.to_account_info(),
-                };
-                let cpi_prog = ctx.accounts.spl_token_prog.clone();
-                let in_ctx = CpiContext::new_with_signer(cpi_prog, in_accounts, signer);
-                token::transfer(in_ctx, log_entry.mkt_token_balance())?;
+                let mint_type = MintType::try_from(market.mkt_mint_type).map_err(|_| ErrorCode::InvalidParameters)?;
+                perform_signed_transfer(ctx.remaining_accounts, signer, mint_type, log_entry.mkt_token_balance(),
+                    &ctx.accounts.mkt_vault.to_account_info(),          // From
+                    &ctx.accounts.user_mkt_token.to_account_info(),     // To
+                    &ctx.accounts.agent.to_account_info(),              // Auth
+                    &ctx.accounts.spl_token_prog.to_account_info(),     // SPL Token Program
+                )?;
                 state.mkt_vault_balance = state.mkt_vault_balance.checked_sub(log_entry.mkt_token_balance())
                     .ok_or(error!(ErrorCode::Overflow))?;
             }
             if log_entry.prc_token_balance() > 0 {
                 result.set_prc_tokens(log_entry.prc_token_balance());
-                let in_accounts = Transfer {
-                    from: ctx.accounts.prc_vault.to_account_info(),
-                    to: ctx.accounts.user_prc_token.to_account_info(),
-                    authority: ctx.accounts.agent.to_account_info(),
-                };
-                let cpi_prog = ctx.accounts.spl_token_prog.clone();
-                let in_ctx = CpiContext::new_with_signer(cpi_prog, in_accounts, signer);
-                token::transfer(in_ctx, log_entry.prc_token_balance())?;
+                let mint_type = MintType::try_from(market.prc_mint_type).map_err(|_| ErrorCode::InvalidParameters)?;
+                perform_signed_transfer(ctx.remaining_accounts, signer, mint_type, log_entry.prc_token_balance(),
+                    &ctx.accounts.prc_vault.to_account_info(),          // From
+                    &ctx.accounts.user_prc_token.to_account_info(),     // To
+                    &ctx.accounts.agent.to_account_info(),              // Auth
+                    &ctx.accounts.spl_token_prog.to_account_info(),     // SPL Token Program
+                )?;
                 state.prc_vault_balance = state.prc_vault_balance.checked_sub(log_entry.prc_token_balance())
                     .ok_or(error!(ErrorCode::Overflow))?;
             }
@@ -1328,39 +1462,41 @@ pub mod aqua_dex {
             msg!("Account not found");
             return Err(ErrorCode::AccountNotFound.into());
         }
-
         Ok(())
     }
 }
 
 #[derive(Accounts)]
+#[instruction(inp_agent_nonce: u8)]
 pub struct CreateMarket<'info> {
+    #[account(zero)]
+    pub market: UncheckedAccount<'info>,
+    #[account(zero)]
+    pub state: UncheckedAccount<'info>,
+    #[account(seeds = [market.key().as_ref()], bump = inp_agent_nonce)]
+    pub agent: UncheckedAccount<'info>,
     #[account(mut)]
-    pub market: AccountInfo<'info>,
+    pub manager: Signer<'info>,
+    pub mkt_mint: UncheckedAccount<'info>,
     #[account(mut)]
-    pub state: AccountInfo<'info>,
-    pub agent: AccountInfo<'info>,
-    #[account(mut, signer)]
-    pub manager: AccountInfo<'info>,
-    pub mkt_mint: AccountInfo<'info>,
+    pub mkt_vault: UncheckedAccount<'info>,
+    pub prc_mint: UncheckedAccount<'info>,
     #[account(mut)]
-    pub mkt_vault: AccountInfo<'info>,
-    pub prc_mint: AccountInfo<'info>,
+    pub prc_vault: UncheckedAccount<'info>,
     #[account(mut)]
-    pub prc_vault: AccountInfo<'info>,
-    #[account(mut)]
-    pub orders: AccountInfo<'info>,
-    #[account(mut)]
-    pub settle_a: AccountInfo<'info>,
-    #[account(mut)]
-    pub settle_b: AccountInfo<'info>,
+    pub orders: UncheckedAccount<'info>,
+    #[account(zero)]
+    pub settle_a: UncheckedAccount<'info>,
+    #[account(zero)]
+    pub settle_b: UncheckedAccount<'info>,
     #[account(address = token::ID)]
-    pub spl_token_prog: AccountInfo<'info>,
-    pub asc_token_prog: AccountInfo<'info>,
+    pub spl_token_prog: UncheckedAccount<'info>,
+    #[account(address = associated_token::ID)]
+    pub asc_token_prog: UncheckedAccount<'info>,
     #[account(address = system_program::ID)]
-    pub sys_prog: AccountInfo<'info>,
+    pub sys_prog: UncheckedAccount<'info>,
     #[account(address = sysvar::rent::ID)]
-    pub sys_rent: AccountInfo<'info>,
+    pub sys_rent: UncheckedAccount<'info>,
 }
 
 #[derive(Accounts)]
@@ -1463,10 +1599,12 @@ pub struct Market {
     pub mkt_vault: Pubkey,              // Vault for Token A (an associated token account controlled by this program)
     pub mkt_nonce: u8,                  // Vault nonce for Token A
     pub mkt_decimals: u8,               // Token A decimals
+    pub mkt_mint_type: u8,              // Token A mint type
     pub prc_mint: Pubkey,               // Token mint for pricing tokens (Token B)
     pub prc_vault: Pubkey,              // Vault for Token B
     pub prc_nonce: u8,                  // Vault nonce for Token B
     pub prc_decimals: u8,               // Token B decimals
+    pub prc_mint_type: u8,              // Token B mint type
     pub orders: Pubkey,                 // Orderbook Bid/Ask entries
     pub settle_0: Pubkey,               // The start of the settlement log
     pub settle_a: Pubkey,               // Settlement log 1 (the active log)
@@ -1528,6 +1666,31 @@ impl WithdrawResult {
         self.prc_tokens = new_amount;
     }
 }
+
+#[event]
+pub struct MatchEvent {
+    pub event_type: u128,
+    pub market: Pubkey,
+    pub maker_order_id: u128,
+    pub maker_filled: bool,
+    pub maker: Pubkey,
+    pub taker: Pubkey,
+    pub taker_side: u8,
+    pub amount: u64,
+    pub price: u64,
+}
+
+/*#[event]
+pub struct OrderEvent {
+    pub market: Pubkey,
+    pub order_side: u8,
+    pub order_id: u128,
+    pub maker: Pubkey,
+    pub taker: Pubkey,
+    pub amount: u64,
+    pub price: u64,
+    pub filled: bool,
+}*/
 
 #[account]
 pub struct SemverRelease {
