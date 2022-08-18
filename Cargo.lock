@@ -206,7 +206,8 @@ dependencies = [
  "byte-slice-cast",
  "bytemuck",
  "num_enum",
- "slab-alloc",
+ "security-token",
+ "slab-alloc 1.0.0 (git+https://github.com/atellix/slab-alloc?branch=aqua-dex)",
  "solana-program",
 ]
 
@@ -803,6 +804,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3ead5388e485d38e622630c6b05afd3761a6701ff15c55b279ea5b31dcb62cff"
 
 [[package]]
+name = "net-authority"
+version = "0.1.0"
+dependencies = [
+ "anchor-lang",
+ "byte-slice-cast",
+ "bytemuck",
+ "num_enum",
+ "slab-alloc 1.0.0 (git+https://github.com/atellix/slab-alloc?branch=net-authority)",
+ "solana-program",
+ "uuid",
+]
+
+[[package]]
 name = "num-derive"
 version = "0.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1079,6 +1093,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d29ab0c6d3fc0ee92fe66e2d99f700eab17a8d57d1c1d3b748380fb20baa78cd"
 
 [[package]]
+name = "security-token"
+version = "0.1.0"
+dependencies = [
+ "anchor-lang",
+ "net-authority",
+ "solana-program",
+]
+
+[[package]]
 name = "semver"
 version = "1.0.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1172,6 +1195,20 @@ dependencies = [
 name = "slab-alloc"
 version = "1.0.0"
 source = "git+https://github.com/atellix/slab-alloc?branch=aqua-dex#ca2bfd0883ce8d4c9fe3f342bbe392774c83e948"
+dependencies = [
+ "arrayref",
+ "bytemuck",
+ "murmur3",
+ "num_enum",
+ "solana-program",
+ "static_assertions",
+ "thiserror",
+]
+
+[[package]]
+name = "slab-alloc"
+version = "1.0.0"
+source = "git+https://github.com/atellix/slab-alloc?branch=net-authority#dca3520b6f5d2e9de08416d6655df6477e547f9a"
 dependencies = [
  "arrayref",
  "bytemuck",
@@ -1372,6 +1409,12 @@ name = "unicode-segmentation"
 version = "1.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8895849a949e7845e06bd6dc1aa51731a103c42707010a5b591c0038fb73385b"
+
+[[package]]
+name = "uuid"
+version = "0.8.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bc5cf98d8186244414c848017f0e2676b3fcb46807f6668a97dfe67359a3c4b7"
 
 [[package]]
 name = "version_check"

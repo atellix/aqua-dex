@@ -187,11 +187,12 @@ async function main() {
         console.log(formatOrder(res))
     }
 
-    if (false) {
+    if (true) {
         console.log('Cancel Order 1')
-        var orderId = decodeOrderId('00000003gh2c1zzzzzzzzzzzzr')
-        await aquadex.rpc.cancelOrder(
-            0, // 0 - Bid, 1 - Ask
+        //var orderId = decodeOrderId('00000003em1800000000000010')
+        var orderId = order1
+        console.log(await aquadex.rpc.cancelOrder(
+            1, // 0 - Bid, 1 - Ask
             orderId,
             {
                 accounts: {
@@ -209,7 +210,7 @@ async function main() {
                 },
                 signers: [resultData2],
             }
-        )
+        ))
         res = await aquadex.account.withdrawResult.fetch(resultData2.publicKey)
         console.log(formatWithdraw(res))
     }
@@ -245,7 +246,7 @@ async function main() {
         console.log(formatOrder(res))
     }
 
-    if (true) {
+    if (false) {
         console.log('Limit Bid')
         console.log(await aquadex.rpc.limitBid(
             false,

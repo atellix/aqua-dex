@@ -3,7 +3,7 @@ use bytemuck::{ Pod, Zeroable, cast_slice_mut };
 use num_enum::{ TryFromPrimitive, IntoPrimitive };
 use arrayref::{ mut_array_refs };
 use anchor_lang::prelude::*;
-use anchor_spl::token::{ self, Transfer, Token };
+use anchor_spl::token::{ self, Transfer as SPL_Transfer, Token };
 use anchor_spl::associated_token::{ self, AssociatedToken };
 use solana_program::{
     sysvar, system_program,
@@ -14,6 +14,9 @@ use solana_program::{
 
 extern crate slab_alloc;
 use slab_alloc::{ SlabPageAlloc, CritMapHeader, CritMap, AnyNode, LeafNode, SlabVec, SlabTreeError };
+
+extern crate security_token;
+use security_token::{ cpi::accounts::{ Transfer as AST_Transfer, CreateAccount as AST_CreateAccount } };
 
 declare_id!("2tHqHUPGZZkotRhmQWjvAnQDPvKb9hyuDtVuUp9ZZ6r6");
 
@@ -479,18 +482,18 @@ fn valid_order(order_type: OrderDT, leaf: &LeafNode, user_key: &Pubkey, sl: &Sla
 }
 
 fn perform_transfer<'info>(
-    accounts: &[AccountInfo<'_>],
+    accounts: &[AccountInfo<'info>],
     mint_type: MintType,
+    ast_offset: usize,
     amount: u64,
     from: &AccountInfo<'info>,
     to: &AccountInfo<'info>,
     auth: &AccountInfo<'info>,
     spl_prog: &AccountInfo<'info>,
-    //ast_prog: &AccountInfo<'info>,
-    //ast_offset: usize,
+    ast_prog: &AccountInfo<'info>,
 ) -> anchor_lang::Result<()> {
     if mint_type == MintType::SPLToken {
-        let in_accounts = Transfer {
+        let in_accounts = SPL_Transfer {
             from: from.clone(),
             to: to.clone(),
             authority: auth.clone(),
@@ -498,30 +501,52 @@ fn perform_transfer<'info>(
         let in_ctx = CpiContext::new(spl_prog.clone(), in_accounts);
         token::transfer(in_ctx, amount)?;
         return Ok(());
+    } else if mint_type == MintType::AtxSecurityToken {
+        let in_accounts = AST_Transfer {
+            from: from.clone(),
+            from_auth: accounts.get(ast_offset).unwrap().to_account_info(),
+            to: to.clone(),
+            to_auth: accounts.get(ast_offset + 1).unwrap().to_account_info(),
+            user: auth.clone(),
+        };
+        let in_ctx = CpiContext::new(ast_prog.clone(), in_accounts);
+        security_token::cpi::transfer(in_ctx, amount)?;
+        return Ok(());
     }
     Err(error!(ErrorCode::InvalidParameters))
 }
 
 fn perform_signed_transfer<'info>(
-    accounts: &[AccountInfo<'_>],
+    accounts: &[AccountInfo<'info>],
     signer: &'_ [&'_ [&'_ [u8]]],
     mint_type: MintType,
+    ast_offset: usize,
     amount: u64,
     from: &AccountInfo<'info>,
     to: &AccountInfo<'info>,
     auth: &AccountInfo<'info>,
     spl_prog: &AccountInfo<'info>,
-    //ast_prog: &AccountInfo<'info>,
-    //ast_offset: usize,
+    ast_prog: &AccountInfo<'info>,
 ) -> anchor_lang::Result<()> {
     if mint_type == MintType::SPLToken {
-        let in_accounts = Transfer {
+        let in_accounts = SPL_Transfer {
             from: from.clone(),
             to: to.clone(),
             authority: auth.clone(),
         };
         let in_ctx = CpiContext::new_with_signer(spl_prog.clone(), in_accounts, signer);
         token::transfer(in_ctx, amount)?;
+        return Ok(());
+    } else if mint_type == MintType::AtxSecurityToken {
+        let in_accounts = AST_Transfer {
+            from: from.clone(),
+            from_auth: accounts.get(ast_offset).unwrap().to_account_info(),
+            to: to.clone(),
+            to_auth: accounts.get(ast_offset + 1).unwrap().to_account_info(),
+            user: auth.clone(),
+        };
+        let in_ctx = CpiContext::new_with_signer(ast_prog.clone(), in_accounts, signer);
+        security_token::cpi::transfer(in_ctx, amount)?;
         return Ok(());
     }
     Err(error!(ErrorCode::InvalidParameters))
@@ -539,7 +564,7 @@ pub mod aqua_dex {
         Ok(())
     }
 
-    pub fn create_market(ctx: Context<CreateMarket>,
+    pub fn create_market<'a, 'b, 'c, 'info>(ctx: Context<'a, 'b, 'c, 'info, CreateMarket<'info>>,
         inp_agent_nonce: u8,
         inp_mkt_vault_nonce: u8,
         inp_prc_vault_nonce: u8,
@@ -549,6 +574,8 @@ pub mod aqua_dex {
         inp_prc_mint_type: u8,
         inp_expire_enable: bool,
         inp_expire_min: i64,
+        inp_mkt_vault_uuid: u128,
+        inp_prc_vault_uuid: u128,
     ) -> anchor_lang::Result<()> {
         let acc_market = &ctx.accounts.market.to_account_info();
         let acc_state = &ctx.accounts.state.to_account_info();
@@ -619,6 +646,21 @@ pub mod aqua_dex {
                 msg!("Create associated token failed for market token");
                 return Err(ErrorCode::ExternalError.into());
             }
+        } else if mkt_mint_type == MintType::AtxSecurityToken {
+            msg!("Create security token vault");
+            let seeds = &[acc_market.key.as_ref(), &[inp_agent_nonce]];
+            let signer = &[&seeds[..]];
+            let in_accounts = AST_CreateAccount {
+                account: acc_mkt_vault.clone(),
+                mint: acc_mkt_mint.clone(),
+                owner: acc_agent.clone(),
+                fee_payer: acc_manager.clone(),
+                create_auth: ctx.remaining_accounts.get(0).unwrap().to_account_info(),
+                close_auth: acc_agent.clone(),
+                system_program: acc_sys.clone(),
+            };
+            let in_ctx = CpiContext::new_with_signer(ctx.accounts.ast_token_prog.to_account_info(), in_accounts, signer);
+            security_token::cpi::create_account(in_ctx, inp_mkt_vault_uuid)?;
         }
 
         if prc_mint_type == MintType::SPLToken {
@@ -643,6 +685,24 @@ pub mod aqua_dex {
                 msg!("Create associated token failed for pricing token");
                 return Err(ErrorCode::ExternalError.into());
             }
+        } else if prc_mint_type == MintType::AtxSecurityToken {
+            let seeds = &[acc_market.key.as_ref(), &[inp_agent_nonce]];
+            let signer = &[&seeds[..]];
+            let mut offset: usize = 0;
+            if mkt_mint_type == MintType::AtxSecurityToken {
+                offset = 1;
+            }
+            let in_accounts = AST_CreateAccount {
+                account: acc_prc_vault.clone(),
+                mint: acc_prc_mint.clone(),
+                owner: acc_agent.clone(),
+                fee_payer: acc_manager.clone(),
+                create_auth: ctx.remaining_accounts.get(offset).unwrap().to_account_info(),
+                close_auth: acc_agent.clone(),
+                system_program: acc_sys.clone(),
+            };
+            let in_ctx = CpiContext::new_with_signer(ctx.accounts.ast_token_prog.to_account_info(), in_accounts, signer);
+            security_token::cpi::create_account(in_ctx, inp_prc_vault_uuid)?;
         }
 
         let acc_orders = &ctx.accounts.orders.to_account_info();
@@ -730,7 +790,7 @@ pub mod aqua_dex {
         Ok(())
     }
 
-    pub fn limit_bid<'a, 'b, 'c, 'info>(ctx: Context<'a, 'b, 'c, 'info, OrderContext>,
+    pub fn limit_bid<'a, 'b, 'c, 'info>(ctx: Context<'a, 'b, 'c, 'info, OrderContext<'info>>,
         inp_rollover: bool, // Perform settlement log rollover
         inp_quantity: u64,
         inp_price: u64,
@@ -992,11 +1052,12 @@ pub mod aqua_dex {
 
         // Send tokens to the vault
         let mint_type = MintType::try_from(market.prc_mint_type).map_err(|_| ErrorCode::InvalidParameters)?;
-        perform_transfer(ctx.remaining_accounts, mint_type, total_cost,
+        perform_transfer(ctx.remaining_accounts, mint_type, 0, total_cost,
             &ctx.accounts.user_prc_token.to_account_info(),  // From
             &ctx.accounts.prc_vault.to_account_info(),       // To
             &ctx.accounts.user.to_account_info(),            // Auth
             &ctx.accounts.spl_token_prog.to_account_info(),  // SPL Token Program
+            &ctx.accounts.ast_token_prog.to_account_info(),  // AST Token Program
         )?;
         result.set_tokens_deposited(total_cost);
 
@@ -1014,18 +1075,19 @@ pub mod aqua_dex {
             let seeds = &[market.to_account_info().key.as_ref(), &[market.agent_nonce]];
             let signer = &[&seeds[..]];
             let mint_type = MintType::try_from(market.mkt_mint_type).map_err(|_| ErrorCode::InvalidParameters)?;
-            perform_signed_transfer(ctx.remaining_accounts, signer, mint_type, tokens_filled,
+            perform_signed_transfer(ctx.remaining_accounts, signer, mint_type, 0, tokens_filled,
                 &ctx.accounts.mkt_vault.to_account_info(),          // From
                 &ctx.accounts.user_mkt_token.to_account_info(),     // To
                 &ctx.accounts.agent.to_account_info(),              // Auth
                 &ctx.accounts.spl_token_prog.to_account_info(),     // SPL Token Program
+                &ctx.accounts.ast_token_prog.to_account_info(),     // AST Token Program
             )?;
         }
         store_struct::<TradeResult>(&result, acc_result)?;
         Ok(())
     }
 
-    pub fn limit_ask(ctx: Context<OrderContext>,
+    pub fn limit_ask<'a, 'b, 'c, 'info>(ctx: Context<'a, 'b, 'c, 'info, OrderContext<'info>>,
         inp_rollover: bool, // Perform settlement log rollover
         inp_quantity: u64,
         inp_price: u64,
@@ -1280,11 +1342,12 @@ pub mod aqua_dex {
 
         // Send tokens to the vault
         let mint_type = MintType::try_from(market.mkt_mint_type).map_err(|_| ErrorCode::InvalidParameters)?;
-        perform_transfer(ctx.remaining_accounts, mint_type, inp_quantity,
+        perform_transfer(ctx.remaining_accounts, mint_type, 0, inp_quantity,
             &ctx.accounts.user_mkt_token.to_account_info(),  // From
             &ctx.accounts.mkt_vault.to_account_info(),       // To
             &ctx.accounts.user.to_account_info(),            // Auth
             &ctx.accounts.spl_token_prog.to_account_info(),  // SPL Token Program
+            &ctx.accounts.ast_token_prog.to_account_info(),  // AST Token Program
         )?;
         result.set_tokens_deposited(inp_quantity);
 
@@ -1306,18 +1369,19 @@ pub mod aqua_dex {
             ];
             let signer = &[&seeds[..]];
             let mint_type = MintType::try_from(market.prc_mint_type).map_err(|_| ErrorCode::InvalidParameters)?;
-            perform_signed_transfer(ctx.remaining_accounts, signer, mint_type, tokens_received,
+            perform_signed_transfer(ctx.remaining_accounts, signer, mint_type, 0, tokens_received,
                 &ctx.accounts.prc_vault.to_account_info(),          // From
                 &ctx.accounts.user_prc_token.to_account_info(),     // To
                 &ctx.accounts.agent.to_account_info(),              // Auth
                 &ctx.accounts.spl_token_prog.to_account_info(),     // SPL Token Program
+                &ctx.accounts.ast_token_prog.to_account_info(),     // AST Token Program
             )?;
         }
         store_struct::<TradeResult>(&result, acc_result)?;
         Ok(())
     }
 
-    pub fn cancel_order(ctx: Context<CancelOrder>,
+    pub fn cancel_order<'a, 'b, 'c, 'info>(ctx: Context<'a, 'b, 'c, 'info, CancelOrder<'info>>,
         inp_side: u8,               // 0 - Bid, 1 - Ask
         inp_order_id: u128,
     ) -> anchor_lang::Result<()> {
@@ -1381,26 +1445,28 @@ pub mod aqua_dex {
         let signer = &[&seeds[..]];
         if side == Side::Bid {
             let mint_type = MintType::try_from(market.prc_mint_type).map_err(|_| ErrorCode::InvalidParameters)?;
-            perform_signed_transfer(ctx.remaining_accounts, signer, mint_type, tokens_out,
+            perform_signed_transfer(ctx.remaining_accounts, signer, mint_type, 0, tokens_out,
                 &ctx.accounts.prc_vault.to_account_info(),          // From
                 &ctx.accounts.user_prc_token.to_account_info(),     // To
                 &ctx.accounts.agent.to_account_info(),              // Auth
                 &ctx.accounts.spl_token_prog.to_account_info(),     // SPL Token Program
+                &ctx.accounts.ast_token_prog.to_account_info(),     // AST Token Program
             )?;
         } else if side == Side::Ask {
             let mint_type = MintType::try_from(market.mkt_mint_type).map_err(|_| ErrorCode::InvalidParameters)?;
-            perform_signed_transfer(ctx.remaining_accounts, signer, mint_type, tokens_out,
+            perform_signed_transfer(ctx.remaining_accounts, signer, mint_type, 0, tokens_out,
                 &ctx.accounts.mkt_vault.to_account_info(),          // From
                 &ctx.accounts.user_mkt_token.to_account_info(),     // To
                 &ctx.accounts.agent.to_account_info(),              // Auth
                 &ctx.accounts.spl_token_prog.to_account_info(),     // SPL Token Program
+                &ctx.accounts.ast_token_prog.to_account_info(),     // AST Token Program
             )?;
         }
         store_struct::<WithdrawResult>(&result, acc_result)?;
         Ok(())
     }
 
-    pub fn withdraw(ctx: Context<Withdraw>) -> anchor_lang::Result<()> {
+    pub fn withdraw<'a, 'b, 'c, 'info>(ctx: Context<'a, 'b, 'c, 'info, Withdraw<'info>>) -> anchor_lang::Result<()> {
         let market = &ctx.accounts.market;
         let state = &mut ctx.accounts.state;
         let acc_agent = &ctx.accounts.agent.to_account_info();
@@ -1432,11 +1498,12 @@ pub mod aqua_dex {
             if log_entry.mkt_token_balance() > 0 {
                 result.set_mkt_tokens(log_entry.mkt_token_balance());
                 let mint_type = MintType::try_from(market.mkt_mint_type).map_err(|_| ErrorCode::InvalidParameters)?;
-                perform_signed_transfer(ctx.remaining_accounts, signer, mint_type, log_entry.mkt_token_balance(),
+                perform_signed_transfer(ctx.remaining_accounts, signer, mint_type, 0, log_entry.mkt_token_balance(),
                     &ctx.accounts.mkt_vault.to_account_info(),          // From
                     &ctx.accounts.user_mkt_token.to_account_info(),     // To
                     &ctx.accounts.agent.to_account_info(),              // Auth
                     &ctx.accounts.spl_token_prog.to_account_info(),     // SPL Token Program
+                    &ctx.accounts.ast_token_prog.to_account_info(),     // AST Token Program
                 )?;
                 state.mkt_vault_balance = state.mkt_vault_balance.checked_sub(log_entry.mkt_token_balance())
                     .ok_or(error!(ErrorCode::Overflow))?;
@@ -1444,11 +1511,12 @@ pub mod aqua_dex {
             if log_entry.prc_token_balance() > 0 {
                 result.set_prc_tokens(log_entry.prc_token_balance());
                 let mint_type = MintType::try_from(market.prc_mint_type).map_err(|_| ErrorCode::InvalidParameters)?;
-                perform_signed_transfer(ctx.remaining_accounts, signer, mint_type, log_entry.prc_token_balance(),
+                perform_signed_transfer(ctx.remaining_accounts, signer, mint_type, 0, log_entry.prc_token_balance(),
                     &ctx.accounts.prc_vault.to_account_info(),          // From
                     &ctx.accounts.user_prc_token.to_account_info(),     // To
                     &ctx.accounts.agent.to_account_info(),              // Auth
                     &ctx.accounts.spl_token_prog.to_account_info(),     // SPL Token Program
+                    &ctx.accounts.ast_token_prog.to_account_info(),     // AST Token Program
                 )?;
                 state.prc_vault_balance = state.prc_vault_balance.checked_sub(log_entry.prc_token_balance())
                     .ok_or(error!(ErrorCode::Overflow))?;
@@ -1493,6 +1561,8 @@ pub struct CreateMarket<'info> {
     pub spl_token_prog: UncheckedAccount<'info>,
     #[account(address = associated_token::ID)]
     pub asc_token_prog: UncheckedAccount<'info>,
+    #[account(address = security_token::ID)]
+    pub ast_token_prog: UncheckedAccount<'info>,
     #[account(address = system_program::ID)]
     pub sys_prog: UncheckedAccount<'info>,
     #[account(address = sysvar::rent::ID)]
@@ -1526,6 +1596,8 @@ pub struct OrderContext<'info> {
     pub result: AccountInfo<'info>,
     #[account(address = token::ID)]
     pub spl_token_prog: AccountInfo<'info>,
+    #[account(address = security_token::ID)]
+    pub ast_token_prog: AccountInfo<'info>,
 }
 
 #[derive(Accounts)]
@@ -1551,6 +1623,8 @@ pub struct CancelOrder<'info> {
     pub result: AccountInfo<'info>,
     #[account(address = token::ID)]
     pub spl_token_prog: AccountInfo<'info>,
+    #[account(address = security_token::ID)]
+    pub ast_token_prog: AccountInfo<'info>,
 }
 
 #[derive(Accounts)]
@@ -1576,6 +1650,8 @@ pub struct Withdraw<'info> {
     pub result: AccountInfo<'info>,
     #[account(address = token::ID)]
     pub spl_token_prog: AccountInfo<'info>,
+    #[account(address = security_token::ID)]
+    pub ast_token_prog: AccountInfo<'info>,
 }
 
 #[derive(Accounts)]
