@@ -314,6 +314,14 @@ fn scale_price(quantity: u64, price: u64, decimal_factor: u64) -> anchor_lang::R
     return Ok(tokens);
 }
 
+#[inline]
+fn calculate_fee(fee_rate: u32, base_amount: u64) -> anchor_lang::Result<u64> {
+    let mut fee: u128 = (base_amount as u128).checked_mul(fee_rate as u128).ok_or(error!(ErrorCode::Overflow))?;
+    fee = fee.checked_div(10000000).ok_or(error!(ErrorCode::Overflow))?;
+    let result = u64::try_from(fee).map_err(|_| error!(ErrorCode::Overflow))?;
+    Ok(result)
+}
+
 fn verify_matching_accounts(left: &Pubkey, right: &Pubkey, error_msg: Option<String>) -> anchor_lang::Result<()> {
     if *left != *right {
         if error_msg.is_some() {
@@ -574,6 +582,7 @@ pub mod aqua_dex {
         inp_prc_mint_type: u8,
         inp_expire_enable: bool,
         inp_expire_min: i64,
+        inp_taker_fee: u32,
         inp_mkt_vault_uuid: u128,
         inp_prc_vault_uuid: u128,
     ) -> anchor_lang::Result<()> {
@@ -715,6 +724,7 @@ pub mod aqua_dex {
             expire_enable: inp_expire_enable,
             expire_min: inp_expire_min,
             log_rollover: false,
+            taker_fee: inp_taker_fee,
             state: *acc_state.key,
             agent: *acc_agent.key,
             agent_nonce: inp_agent_nonce,
@@ -745,6 +755,7 @@ pub mod aqua_dex {
             mkt_order_balance: 0,
             prc_vault_balance: 0,
             prc_order_balance: 0,
+            prc_fees_balance: 0,
             last_ts: 0,
         };
         store_struct::<MarketState>(&state, acc_state)?;
@@ -880,6 +891,7 @@ pub mod aqua_dex {
         let mut tokens_to_fill: u64 = inp_quantity;
         let mut tokens_filled: u64 = 0;
         let mut tokens_paid: u64 = 0;
+        let mut tokens_fee: u64 = 0;
         let mut expired_orders = Vec::new();
         loop {
             let node_res = map_predicate_min(ob, DT::AskOrder, |sl, leaf|
@@ -900,6 +912,7 @@ pub mod aqua_dex {
                     tokens_filled = tokens_filled.checked_add(tokens_to_fill).ok_or(error!(ErrorCode::Overflow))?;
                     let tokens_part = scale_price(tokens_to_fill, posted_price, mkt_decimal_factor)?;
                     tokens_paid = tokens_paid.checked_add(tokens_part).ok_or(error!(ErrorCode::Overflow))?;
+                    tokens_fee = tokens_fee.checked_add(calculate_fee(market.taker_fee, tokens_part)?).ok_or(error!(ErrorCode::Overflow))?;
                     msg!("Atellix: Filling - {} @ {}", tokens_part.to_string(), posted_price.to_string());
                     msg!("atellix-log");
                     emit!(MatchEvent {
@@ -922,6 +935,7 @@ pub mod aqua_dex {
                     tokens_filled = tokens_filled.checked_add(posted_qty).ok_or(error!(ErrorCode::Overflow))?;
                     let tokens_part = scale_price(posted_qty, posted_price, mkt_decimal_factor)?;
                     tokens_paid = tokens_paid.checked_add(tokens_part).ok_or(error!(ErrorCode::Overflow))?;
+                    tokens_fee = tokens_fee.checked_add(calculate_fee(market.taker_fee, tokens_part)?).ok_or(error!(ErrorCode::Overflow))?;
                     msg!("Atellix: Filling - {} @ {}", posted_qty.to_string(), posted_price.to_string());
                     msg!("atellix-log");
                     emit!(MatchEvent {
@@ -942,6 +956,7 @@ pub mod aqua_dex {
                     tokens_filled = tokens_filled.checked_add(tokens_to_fill).ok_or(error!(ErrorCode::Overflow))?;
                     let tokens_part = scale_price(tokens_to_fill, posted_price, mkt_decimal_factor)?;
                     tokens_paid = tokens_paid.checked_add(tokens_part).ok_or(error!(ErrorCode::Overflow))?;
+                    tokens_fee = tokens_fee.checked_add(calculate_fee(market.taker_fee, tokens_part)?).ok_or(error!(ErrorCode::Overflow))?;
                     msg!("Atellix: Filling - {} @ {}", tokens_to_fill.to_string(), posted_price.to_string());
                     msg!("atellix-log");
                     emit!(MatchEvent {
@@ -965,6 +980,9 @@ pub mod aqua_dex {
                 break;
             }
         }
+
+        msg!("Atellix: Fee: {}", tokens_fee.to_string());
+
         let mut expired_count: u32 = 0;
         if expired_orders.len() > 0 {
             loop {
@@ -988,7 +1006,7 @@ pub mod aqua_dex {
             }
         }
 
-        let mut result = TradeResult { tokens_filled: tokens_filled, tokens_posted: 0, tokens_deposited: 0, order_id: 0 };
+        let mut result = TradeResult { tokens_filled: tokens_filled, tokens_posted: 0, tokens_deposited: 0, tokens_fee: tokens_fee, order_id: 0 };
 
         // Add order to orderbook if not filled
         let tokens_remaining = inp_quantity.checked_sub(tokens_filled).ok_or(error!(ErrorCode::Overflow))?;
@@ -1038,9 +1056,14 @@ pub mod aqua_dex {
         }
         let discount = tokens_in.checked_sub(tokens_paid).ok_or(error!(ErrorCode::Overflow))?;
         msg!("Atellix: Discount: {}", discount.to_string());
-        let total_cost = tokens_in.checked_sub(discount).ok_or(error!(ErrorCode::Overflow))?;
+        let mut total_cost = tokens_in.checked_sub(discount).ok_or(error!(ErrorCode::Overflow))?;
         state_upd.prc_vault_balance = state_upd.prc_vault_balance.checked_sub(discount).ok_or(error!(ErrorCode::Overflow))?;
         state_upd.prc_order_balance = state_upd.prc_order_balance.checked_sub(discount).ok_or(error!(ErrorCode::Overflow))?;
+
+        // Apply fees
+        total_cost = total_cost.checked_add(tokens_fee).ok_or(error!(ErrorCode::Overflow))?;
+        state_upd.prc_vault_balance = state_upd.prc_vault_balance.checked_add(tokens_fee).ok_or(error!(ErrorCode::Overflow))?;
+        state_upd.prc_fees_balance = state_upd.prc_fees_balance.checked_add(tokens_fee).ok_or(error!(ErrorCode::Overflow))?;
 
         /*msg!("Atellix: Pricing Token Vault Deposit: {}", total_cost.to_string());
         msg!("Atellix: Pricing Token Vault Balance: {} (Orderbook: {})",
@@ -1175,6 +1198,7 @@ pub mod aqua_dex {
         let mut tokens_to_fill: u64 = inp_quantity;
         let mut tokens_filled: u64 = 0;
         let mut tokens_received: u64 = 0;
+        let mut tokens_fee: u64 = 0;
         let mut expired_orders = Vec::new();
         loop {
             let node_res = map_predicate_max(ob, DT::BidOrder, |sl, leaf|
@@ -1195,6 +1219,7 @@ pub mod aqua_dex {
                     tokens_filled = tokens_filled.checked_add(tokens_to_fill).ok_or(error!(ErrorCode::Overflow))?;
                     let tokens_part = scale_price(tokens_to_fill, posted_price, mkt_decimal_factor)?;
                     tokens_received = tokens_received.checked_add(tokens_part).ok_or(error!(ErrorCode::Overflow))?;
+                    tokens_fee = tokens_fee.checked_add(calculate_fee(market.taker_fee, tokens_part)?).ok_or(error!(ErrorCode::Overflow))?;
                     msg!("Atellix: Filling - {} @ {}", tokens_part.to_string(), posted_price.to_string());
                     msg!("atellix-log");
                     emit!(MatchEvent {
@@ -1217,6 +1242,7 @@ pub mod aqua_dex {
                     tokens_filled = tokens_filled.checked_add(posted_qty).ok_or(error!(ErrorCode::Overflow))?;
                     let tokens_part = scale_price(posted_qty, posted_price, mkt_decimal_factor)?;
                     tokens_received = tokens_received.checked_add(tokens_part).ok_or(error!(ErrorCode::Overflow))?;
+                    tokens_fee = tokens_fee.checked_add(calculate_fee(market.taker_fee, tokens_part)?).ok_or(error!(ErrorCode::Overflow))?;
                     msg!("Atellix: Filling - {} @ {}", posted_qty.to_string(), posted_price.to_string());
                     msg!("atellix-log");
                     emit!(MatchEvent {
@@ -1237,6 +1263,7 @@ pub mod aqua_dex {
                     tokens_filled = tokens_filled.checked_add(tokens_to_fill).ok_or(error!(ErrorCode::Overflow))?;
                     let tokens_part = scale_price(tokens_to_fill, posted_price, mkt_decimal_factor)?;
                     tokens_received = tokens_received.checked_add(tokens_part).ok_or(error!(ErrorCode::Overflow))?;
+                    tokens_fee = tokens_fee.checked_add(calculate_fee(market.taker_fee, tokens_part)?).ok_or(error!(ErrorCode::Overflow))?;
                     msg!("Atellix: Filling - {} @ {}", tokens_to_fill.to_string(), posted_price.to_string());
                     msg!("atellix-log");
                     emit!(MatchEvent {
@@ -1260,6 +1287,9 @@ pub mod aqua_dex {
                 break;
             }
         }
+
+        msg!("Atellix: Fee: {}", tokens_fee.to_string());
+
         let mut expired_count: u32 = 0;
         if expired_orders.len() > 0 {
             loop {
@@ -1285,7 +1315,7 @@ pub mod aqua_dex {
             }
         }
 
-        let mut result = TradeResult { tokens_filled: tokens_filled, tokens_posted: 0, tokens_deposited: 0, order_id: 0 };
+        let mut result = TradeResult { tokens_filled: tokens_filled, tokens_posted: 0, tokens_deposited: 0, tokens_fee: tokens_fee, order_id: 0 };
 
         // Add order to orderbook if not filled
         let tokens_remaining = inp_quantity.checked_sub(tokens_filled).ok_or(error!(ErrorCode::Overflow))?;
@@ -1352,12 +1382,16 @@ pub mod aqua_dex {
         result.set_tokens_deposited(inp_quantity);
 
         if tokens_filled > 0 {
-            msg!("Atellix: Pricing Token Vault Withdraw: {}", tokens_received.to_string());
-
             // Withdraw tokens from the vault
             state_upd.prc_vault_balance = state_upd.prc_vault_balance.checked_sub(tokens_received).ok_or(error!(ErrorCode::Overflow))?;
             state_upd.prc_order_balance = state_upd.prc_order_balance.checked_sub(tokens_received).ok_or(error!(ErrorCode::Overflow))?;
 
+            // Apply fees
+            tokens_received = tokens_received.checked_sub(tokens_fee).ok_or(error!(ErrorCode::Overflow))?;
+            state_upd.prc_vault_balance = state_upd.prc_vault_balance.checked_add(tokens_fee).ok_or(error!(ErrorCode::Overflow))?;
+            state_upd.prc_fees_balance = state_upd.prc_fees_balance.checked_add(tokens_fee).ok_or(error!(ErrorCode::Overflow))?;
+
+            //msg!("Atellix: Pricing Token Vault Withdraw: {}", tokens_received.to_string());
             /*msg!("Atellix: Pricing Token Vault Balance: {} (Orderbook: {})",
                 state_upd.prc_vault_balance,
                 state_upd.prc_order_balance,
@@ -1667,6 +1701,7 @@ pub struct Market {
     pub expire_enable: bool,            // Enable order expiration
     pub expire_min: i64,                // Minimum time an order must be posted before expiration
     pub log_rollover: bool,             // Request for a new settlement log account for rollover
+    pub taker_fee: u32,                 // Taker commission fee
     pub state: Pubkey,                  // Market statistics (frequently updated market details)
     pub agent: Pubkey,                  // Program derived address for signing transfers
     pub agent_nonce: u8,                // Agent nonce
@@ -1698,6 +1733,7 @@ pub struct MarketState {
     pub mkt_order_balance: u64,         // Token A order balance (tokens in vault available to trade)
     pub prc_vault_balance: u64,         // Token B vault total balance
     pub prc_order_balance: u64,         // Token B order balance
+    pub prc_fees_balance: u64,          // Token B commission fees balance
     pub last_ts: i64,                   // Timestamp of last event
 }
 
@@ -1706,6 +1742,7 @@ pub struct TradeResult {
     pub tokens_filled: u64,             // Received tokens
     pub tokens_posted: u64,             // Posted tokens
     pub tokens_deposited: u64,          // Tokens deposited with the exchange (filled token cost + tokens posted)
+    pub tokens_fee: u64,                // Taker commission fee
     pub order_id: u128,                 // Order ID
 }
 

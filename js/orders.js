@@ -74,6 +74,7 @@ function formatOrder(order) {
         tokensFilled: order.tokensFilled.toString(),
         tokensPosted: order.tokensPosted.toString(),
         tokensDeposited: order.tokensDeposited.toString(),
+        tokensFee: order.tokensFee.toString(),
         orderId: encodeOrderId(order.orderId),
     }
     return res
@@ -111,7 +112,7 @@ async function main() {
     const tokenMint1 = new PublicKey(mktData.tokenMint1) // Market token
     const tokenMint2 = new PublicKey(mktData.tokenMint2) // Pricing token
 
-    var accountId1 = '2177ff77-a91a-4e3b-b54a-fa4e765ff44d' // Vault
+    var accountId1 = '2980c3a2-e8d9-4b1d-943b-fd92c13d2f62' // Vault
     var accountId2 = '0d29574d-5707-4291-b0bf-d0f69b172dc9' // User Account
     var accountBuf1 = Buffer.from(uuidparse(accountId1).reverse())
     var accountBuf2 = Buffer.from(uuidparse(accountId2).reverse())
@@ -161,7 +162,7 @@ async function main() {
 
     var order1
 
-    if (false) {
+    if (true) {
         console.log('Limit Ask 1')
         console.log(await aquadex.rpc.limitAsk(
             false,
@@ -189,7 +190,7 @@ async function main() {
                 },
                 remainingAccounts: [
                     { pubkey: new PublicKey('3uGbEYywK2Lz1dPJtzXmEyDbTiDUoKcGqBAsEs5cpxgY'), isWritable: false, isSigner: false }, // From: User auth
-                    { pubkey: new PublicKey('23L5eDz42y5TwwmCLwtWY4osFjH2ESwRJDPTVt7bKzHp'), isWritable: false, isSigner: false }, // To: Market auth
+                    { pubkey: new PublicKey('BXmUTAeeLuWHjy3crDho1YvAvje2NrJwcqnwnkDZMmDb'), isWritable: false, isSigner: false }, // To: Market auth
                 ],
                 signers: [resultData1],
             }
@@ -288,7 +289,7 @@ async function main() {
                 },
                 signers: [resultData1],
                 remainingAccounts: [
-                    { pubkey: new PublicKey('23L5eDz42y5TwwmCLwtWY4osFjH2ESwRJDPTVt7bKzHp'), isWritable: false, isSigner: false }, // From: Market auth
+                    { pubkey: new PublicKey('BXmUTAeeLuWHjy3crDho1YvAvje2NrJwcqnwnkDZMmDb'), isWritable: false, isSigner: false }, // From: Market auth
                     { pubkey: new PublicKey('3uGbEYywK2Lz1dPJtzXmEyDbTiDUoKcGqBAsEs5cpxgY'), isWritable: false, isSigner: false }, // To: User auth
                 ],
             }
