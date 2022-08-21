@@ -315,6 +315,14 @@ fn scale_price(quantity: u64, price: u64, decimal_factor: u64) -> anchor_lang::R
 }
 
 #[inline]
+fn fill_quantity(input_price: u64, order_price: u64, decimal_factor: u64) -> anchor_lang::Result<u64> {
+    let mut tokens_calc: u128 = (input_price as u128).checked_mul(decimal_factor as u128).ok_or(error!(ErrorCode::Overflow))?;
+    tokens_calc = tokens_calc.checked_div(order_price as u128).ok_or(error!(ErrorCode::Overflow))?;
+    let tokens: u64 = u64::try_from(tokens_calc).map_err(|_| error!(ErrorCode::Overflow))?;
+    return Ok(tokens);
+}
+
+#[inline]
 fn calculate_fee(fee_rate: u32, base_amount: u64) -> anchor_lang::Result<u64> {
     let mut fee: u128 = (base_amount as u128).checked_mul(fee_rate as u128).ok_or(error!(ErrorCode::Overflow))?;
     fee = fee.checked_div(10000000).ok_or(error!(ErrorCode::Overflow))?;
@@ -806,8 +814,7 @@ pub mod aqua_dex {
         inp_quantity: u64,
         inp_price: u64,
         inp_post: bool,     // Post the order order to the orderbook, otherwise it must be filled immediately
-        // TODO: require fill
-        _inp_fill: bool,     // Require orders that are not posted to be filled completely (ignored for posted orders)
+        inp_fill: bool,     // Require orders that are not posted to be filled completely (ignored for posted orders)
         inp_expires: i64,   // Unix timestamp for order expiration (must be in the future, must exceed minimum duration)
     ) -> anchor_lang::Result<()> {
         let clock = Clock::get()?;
@@ -824,6 +831,10 @@ pub mod aqua_dex {
         let acc_settle2 = &ctx.accounts.settle_b.to_account_info();
         let acc_result = &ctx.accounts.result.to_account_info();
 
+        if inp_post && inp_fill {
+            msg!("Require fill cannot be used with order posting");
+            return Err(ErrorCode::InvalidParameters.into());
+        }
         if !market.active {
             msg!("Market closed");
             return Err(ErrorCode::MarketClosed.into());
@@ -881,6 +892,7 @@ pub mod aqua_dex {
         tokens_in_calc = tokens_in_calc.checked_div(mkt_decimal_factor as u128).ok_or(error!(ErrorCode::Overflow))?;
         let tokens_in: u64 = u64::try_from(tokens_in_calc).map_err(|_| error!(ErrorCode::Overflow))?;
         let state_upd = &mut ctx.accounts.state;
+        state_upd.action_counter = state_upd.action_counter.checked_add(1).ok_or(error!(ErrorCode::Overflow))?;
         state_upd.prc_vault_balance = state_upd.prc_vault_balance.checked_add(tokens_in).ok_or(error!(ErrorCode::Overflow))?;
         state_upd.prc_order_balance = state_upd.prc_order_balance.checked_add(tokens_in).ok_or(error!(ErrorCode::Overflow))?;
 
@@ -917,6 +929,7 @@ pub mod aqua_dex {
                     msg!("atellix-log");
                     emit!(MatchEvent {
                         event_type: 0,
+                        action_id: state_upd.action_counter,
                         market: market.key(),
                         maker_order_id: posted_node.key(),
                         maker_filled: true,
@@ -940,6 +953,7 @@ pub mod aqua_dex {
                     msg!("atellix-log");
                     emit!(MatchEvent {
                         event_type: 0,
+                        action_id: state_upd.action_counter,
                         market: market.key(),
                         maker_order_id: posted_node.key(),
                         maker_filled: true,
@@ -961,6 +975,7 @@ pub mod aqua_dex {
                     msg!("atellix-log");
                     emit!(MatchEvent {
                         event_type: 0,
+                        action_id: state_upd.action_counter,
                         market: market.key(),
                         maker_order_id: posted_node.key(),
                         maker_filled: false,
@@ -999,6 +1014,17 @@ pub mod aqua_dex {
                     expire_order.amount().to_string(),
                     Order::price(expire_leaf.key()).to_string(),
                 );
+                msg!("atellix-log");
+                emit!(ExpireEvent {
+                    event_type: 0,
+                    action_id: state_upd.action_counter,
+                    market: market.key(),
+                    owner: expire_leaf.owner(),
+                    order_side: Side::Ask as u8,
+                    order_id: expired_id,
+                    price: Order::price(expire_leaf.key()),
+                    quantity: expire_amount,
+                });
                 log_settlement(market, state_upd, acc_settle1, acc_settle2, &expire_leaf.owner(), true, expire_amount)?; // No multiply for Ask order
                 map_remove(ob, DT::AskOrder, expire_leaf.key())?;
                 Order::free_index(ob, DT::AskOrder, expire_leaf.slot())?;
@@ -1010,6 +1036,10 @@ pub mod aqua_dex {
 
         // Add order to orderbook if not filled
         let tokens_remaining = inp_quantity.checked_sub(tokens_filled).ok_or(error!(ErrorCode::Overflow))?;
+        if tokens_remaining > 0 && inp_fill {
+            msg!("Order not filled");
+            return Err(ErrorCode::OrderNotFilled.into());
+        }
         if tokens_remaining > 0 && inp_post {
             let order_id = Order::new_key(state_upd, Side::Bid, inp_price);
             let order_idx = Order::next_index(ob, DT::BidOrder)?;
@@ -1107,6 +1137,27 @@ pub mod aqua_dex {
             )?;
         }
         store_struct::<TradeResult>(&result, acc_result)?;
+
+        msg!("atellix-log");
+        emit!(OrderEvent {
+            event_type: 0,
+            action_id: state_upd.action_counter,
+            market: market.key(),
+            user: acc_user.key(),
+            market_token: ctx.accounts.user_mkt_token.key(),
+            pricing_token: ctx.accounts.user_prc_token.key(),
+            order_id: result.order_id,
+            order_side: Side::Bid as u8,
+            filled: tokens_remaining == 0,
+            tokens_filled: result.tokens_filled,
+            tokens_deposited: result.tokens_deposited,
+            tokens_fee: result.tokens_fee,
+            posted: result.tokens_posted > 0,
+            posted_quantity: result.tokens_posted,
+            order_price: inp_price,
+            order_quantity: inp_quantity,
+        });
+
         Ok(())
     }
 
@@ -1115,8 +1166,7 @@ pub mod aqua_dex {
         inp_quantity: u64,
         inp_price: u64,
         inp_post: bool,     // Post the order order to the orderbook, otherwise it must be filled immediately
-        // TODO: require fill
-        _inp_fill: bool,     // Require orders that are not posted to be filled completely (ignored for posted orders)
+        inp_fill: bool,     // Require orders that are not posted to be filled completely
         inp_expires: i64,   // Unix timestamp for order expiration (must be in the future, must exceed minimum duration)
     ) -> anchor_lang::Result<()> {
         let clock = Clock::get()?;
@@ -1133,6 +1183,10 @@ pub mod aqua_dex {
         let acc_settle2 = &ctx.accounts.settle_b.to_account_info();
         let acc_result = &ctx.accounts.result.to_account_info();
 
+        if inp_post && inp_fill {
+            msg!("Require fill cannot be used with order posting");
+            return Err(ErrorCode::InvalidParameters.into());
+        }
         if !market.active {
             msg!("Market closed");
             return Err(ErrorCode::MarketClosed.into());
@@ -1185,6 +1239,7 @@ pub mod aqua_dex {
         msg!("Atellix: Limit Ask: {} @ {}", inp_quantity.to_string(), inp_price.to_string());
 
         let state_upd = &mut ctx.accounts.state;
+        state_upd.action_counter = state_upd.action_counter.checked_add(1).ok_or(error!(ErrorCode::Overflow))?;
         state_upd.mkt_vault_balance = state_upd.mkt_vault_balance.checked_add(inp_quantity).ok_or(error!(ErrorCode::Overflow))?;
         state_upd.mkt_order_balance = state_upd.mkt_order_balance.checked_add(inp_quantity).ok_or(error!(ErrorCode::Overflow))?;
 
@@ -1224,6 +1279,7 @@ pub mod aqua_dex {
                     msg!("atellix-log");
                     emit!(MatchEvent {
                         event_type: 0,
+                        action_id: state_upd.action_counter,
                         market: market.key(),
                         maker_order_id: posted_node.key(),
                         maker_filled: true,
@@ -1247,6 +1303,7 @@ pub mod aqua_dex {
                     msg!("atellix-log");
                     emit!(MatchEvent {
                         event_type: 0,
+                        action_id: state_upd.action_counter,
                         market: market.key(),
                         maker_order_id: posted_node.key(),
                         maker_filled: true,
@@ -1268,6 +1325,7 @@ pub mod aqua_dex {
                     msg!("atellix-log");
                     emit!(MatchEvent {
                         event_type: 0,
+                        action_id: state_upd.action_counter,
                         market: market.key(),
                         maker_order_id: posted_node.key(),
                         maker_filled: false,
@@ -1308,6 +1366,17 @@ pub mod aqua_dex {
                 );
                 let expire_price = Order::price(expire_leaf.key());
                 let expire_total = expire_amount.checked_mul(expire_price).ok_or(error!(ErrorCode::Overflow))?;
+                msg!("atellix-log");
+                emit!(ExpireEvent {
+                    event_type: 0,
+                    action_id: state_upd.action_counter,
+                    market: market.key(),
+                    owner: expire_leaf.owner(),
+                    order_side: Side::Bid as u8,
+                    order_id: expired_id,
+                    price: Order::price(expire_leaf.key()),
+                    quantity: expire_amount,
+                });
                 log_settlement(market, state_upd, acc_settle1, acc_settle2, &expire_leaf.owner(), false, expire_total)?; // Total calculated
                 map_remove(ob, DT::BidOrder, expire_leaf.key())?;
                 Order::free_index(ob, DT::BidOrder, expire_leaf.slot())?;
@@ -1319,6 +1388,10 @@ pub mod aqua_dex {
 
         // Add order to orderbook if not filled
         let tokens_remaining = inp_quantity.checked_sub(tokens_filled).ok_or(error!(ErrorCode::Overflow))?;
+        if tokens_remaining > 0 && inp_fill {
+            msg!("Order not filled");
+            return Err(ErrorCode::OrderNotFilled.into());
+        }
         if tokens_remaining > 0 && inp_post {
             // Add order to orderbook
             let order_id = Order::new_key(state_upd, Side::Ask, inp_price);
@@ -1412,6 +1485,749 @@ pub mod aqua_dex {
             )?;
         }
         store_struct::<TradeResult>(&result, acc_result)?;
+
+        msg!("atellix-log");
+        emit!(OrderEvent {
+            event_type: 0,
+            action_id: state_upd.action_counter,
+            market: market.key(),
+            user: acc_user.key(),
+            market_token: ctx.accounts.user_mkt_token.key(),
+            pricing_token: ctx.accounts.user_prc_token.key(),
+            order_id: result.order_id,
+            order_side: Side::Ask as u8,
+            filled: tokens_remaining == 0,
+            tokens_filled: result.tokens_filled,
+            tokens_deposited: result.tokens_deposited,
+            tokens_fee: result.tokens_fee,
+            posted: result.tokens_posted > 0,
+            posted_quantity: result.tokens_posted,
+            order_price: inp_price,
+            order_quantity: inp_quantity,
+        });
+
+        Ok(())
+    }
+
+    pub fn market_bid<'a, 'b, 'c, 'info>(ctx: Context<'a, 'b, 'c, 'info, OrderContext<'info>>,
+        inp_rollover: bool,     // Perform settlement log rollover
+        inp_by_quantity: bool,  // Fill by quantity (otherwise price)
+        inp_quantity: u64,      // Fill until quantity
+        inp_net_price: u64,     // Fill until net price is reached
+        inp_fill: bool,         // Require orders that are not posted to be filled completely (ignored for posted orders)
+    ) -> anchor_lang::Result<()> {
+        let clock = Clock::get()?;
+        let clock_ts = clock.unix_timestamp;
+
+        let market = &mut ctx.accounts.market;
+        let market_state = &ctx.accounts.state;
+        let acc_agent = &ctx.accounts.agent.to_account_info();
+        let acc_user = &ctx.accounts.user.to_account_info();
+        let acc_mkt_vault = &ctx.accounts.mkt_vault.to_account_info();
+        let acc_prc_vault = &ctx.accounts.prc_vault.to_account_info();
+        let acc_orders = &ctx.accounts.orders.to_account_info();
+        let acc_settle1 = &ctx.accounts.settle_a.to_account_info();
+        let acc_settle2 = &ctx.accounts.settle_b.to_account_info();
+        let acc_result = &ctx.accounts.result.to_account_info();
+
+        if !market.active {
+            msg!("Market closed");
+            return Err(ErrorCode::MarketClosed.into());
+        }
+
+        verify_matching_accounts(&market.state, &market_state.key(), Some(String::from("Invalid market state")))?;
+        verify_matching_accounts(&market.agent, &acc_agent.key, Some(String::from("Invalid market agent")))?;
+        verify_matching_accounts(&market.mkt_vault, &acc_mkt_vault.key, Some(String::from("Invalid market token vault")))?;
+        verify_matching_accounts(&market.prc_vault, &acc_prc_vault.key, Some(String::from("Invalid pricing token vault")))?;
+        verify_matching_accounts(&market.orders, &acc_orders.key, Some(String::from("Invalid orderbook")))?;
+
+        let s1 = verify_matching_accounts(&market.settle_a, &acc_settle1.key, Some(String::from("Settlement log 1")));
+        let s2 = verify_matching_accounts(&market.settle_b, &acc_settle2.key, Some(String::from("Settlement log 2")));
+        if s1.is_err() || s2.is_err() {
+            // This is expected to happen sometimes due to a race condition between settlment log rollovers and new orders
+            // Reload the current "market" account with the latest settlement log accounts and retry the transaction
+            msg!("Please update market data and retry");
+            return Err(ErrorCode::RetrySettlementAccount.into());
+        }
+
+        // Append a settlement log account
+        if inp_rollover {
+            if !market.log_rollover {
+                // Another market participant already appended an new log account (please retry transaction)
+                msg!("Please update market data and retry");
+                return Err(ErrorCode::RetrySettlementAccount.into());
+            }
+            let av = ctx.remaining_accounts;
+            let new_settlment_log = av.get(0).unwrap();
+            let market_pk: Pubkey = market.key();
+            log_rollover(market, market_pk, acc_settle2, new_settlment_log)?;
+        }
+
+        msg!("Atellix: Market Bid: Quantity: {}", inp_quantity.to_string());
+
+        let mkt_decimal_base: u64 = 10;
+        let mkt_decimal_factor: u64 = mkt_decimal_base.pow(market.mkt_decimals as u32);
+
+        let state_upd = &mut ctx.accounts.state;
+        state_upd.action_counter = state_upd.action_counter.checked_add(1).ok_or(error!(ErrorCode::Overflow))?;
+
+        let orderbook_data: &mut[u8] = &mut acc_orders.try_borrow_mut_data()?;
+        let ob = SlabPageAlloc::new(orderbook_data);
+
+        // Check if order can be filled
+        let mut price_to_fill: u64 = inp_net_price;
+        let mut tokens_to_fill: u64 = inp_quantity;
+        let mut tokens_filled: u64 = 0;
+        let mut tokens_paid: u64 = 0;
+        let mut tokens_fee: u64 = 0;
+        let mut expired_orders = Vec::new();
+        loop {
+            let node_res = map_predicate_min(ob, DT::AskOrder, |sl, leaf|
+                valid_order(OrderDT::AskOrder, leaf, acc_user.key, sl, &mut expired_orders, clock_ts)
+            );
+            if node_res.is_none() {
+                msg!("Atellix: No Match");
+                break;
+            }
+            let posted_node = node_res.unwrap();
+            let posted_order = ob.index::<Order>(OrderDT::AskOrder as u16, posted_node.slot() as usize);
+            let posted_qty = posted_order.amount;
+            let posted_price = Order::price(posted_node.key());
+            msg!("Atellix: Matched Ask [{}] {} @ {}", posted_node.slot().to_string(), posted_qty.to_string(), posted_price.to_string());
+            // Fill order
+            if inp_by_quantity {
+                // Fill until quantity
+                if posted_qty == tokens_to_fill {         // Match the entire order exactly
+                    tokens_filled = tokens_filled.checked_add(tokens_to_fill).ok_or(error!(ErrorCode::Overflow))?;
+                    let tokens_part = scale_price(tokens_to_fill, posted_price, mkt_decimal_factor)?;
+                    tokens_paid = tokens_paid.checked_add(tokens_part).ok_or(error!(ErrorCode::Overflow))?;
+                    tokens_fee = tokens_fee.checked_add(calculate_fee(market.taker_fee, tokens_part)?).ok_or(error!(ErrorCode::Overflow))?;
+                    msg!("Atellix: Filling - {} @ {}", tokens_part.to_string(), posted_price.to_string());
+                    msg!("atellix-log");
+                    emit!(MatchEvent {
+                        event_type: 0,
+                        action_id: state_upd.action_counter,
+                        market: market.key(),
+                        maker_order_id: posted_node.key(),
+                        maker_filled: true,
+                        maker: posted_node.owner(),
+                        taker: acc_user.key(),
+                        taker_side: Side::Bid as u8,
+                        amount: tokens_to_fill,
+                        price: posted_price,
+                    });
+                    map_remove(ob, DT::AskOrder, posted_node.key())?;
+                    Order::free_index(ob, DT::AskOrder, posted_node.slot())?;
+                    state_upd.prc_vault_balance = state_upd.prc_vault_balance.checked_add(tokens_part).ok_or(error!(ErrorCode::Overflow))?;
+                    state_upd.prc_order_balance = state_upd.prc_order_balance.checked_add(tokens_part).ok_or(error!(ErrorCode::Overflow))?;
+                    log_settlement(market, state_upd, acc_settle1, acc_settle2, &posted_node.owner(), false, tokens_part)?;
+                    break;
+                } else if posted_qty < tokens_to_fill {   // Match the entire order and continue
+                    tokens_to_fill = tokens_to_fill.checked_sub(posted_qty).ok_or(error!(ErrorCode::Overflow))?;
+                    tokens_filled = tokens_filled.checked_add(posted_qty).ok_or(error!(ErrorCode::Overflow))?;
+                    let tokens_part = scale_price(posted_qty, posted_price, mkt_decimal_factor)?;
+                    tokens_paid = tokens_paid.checked_add(tokens_part).ok_or(error!(ErrorCode::Overflow))?;
+                    tokens_fee = tokens_fee.checked_add(calculate_fee(market.taker_fee, tokens_part)?).ok_or(error!(ErrorCode::Overflow))?;
+                    msg!("Atellix: Filling - {} @ {}", posted_qty.to_string(), posted_price.to_string());
+                    msg!("atellix-log");
+                    emit!(MatchEvent {
+                        event_type: 0,
+                        action_id: state_upd.action_counter,
+                        market: market.key(),
+                        maker_order_id: posted_node.key(),
+                        maker_filled: true,
+                        maker: posted_node.owner(),
+                        taker: acc_user.key(),
+                        taker_side: Side::Bid as u8,
+                        amount: posted_qty,
+                        price: posted_price,
+                    });
+                    map_remove(ob, DT::AskOrder, posted_node.key())?;
+                    Order::free_index(ob, DT::AskOrder, posted_node.slot())?;
+                    state_upd.prc_vault_balance = state_upd.prc_vault_balance.checked_add(tokens_part).ok_or(error!(ErrorCode::Overflow))?;
+                    state_upd.prc_order_balance = state_upd.prc_order_balance.checked_add(tokens_part).ok_or(error!(ErrorCode::Overflow))?;
+                    log_settlement(market, state_upd, acc_settle1, acc_settle2, &posted_node.owner(), false, tokens_part)?;
+                } else if posted_qty > tokens_to_fill {   // Match part of the order
+                    tokens_filled = tokens_filled.checked_add(tokens_to_fill).ok_or(error!(ErrorCode::Overflow))?;
+                    let tokens_part = scale_price(tokens_to_fill, posted_price, mkt_decimal_factor)?;
+                    tokens_paid = tokens_paid.checked_add(tokens_part).ok_or(error!(ErrorCode::Overflow))?;
+                    tokens_fee = tokens_fee.checked_add(calculate_fee(market.taker_fee, tokens_part)?).ok_or(error!(ErrorCode::Overflow))?;
+                    msg!("Atellix: Filling - {} @ {}", tokens_to_fill.to_string(), posted_price.to_string());
+                    msg!("atellix-log");
+                    emit!(MatchEvent {
+                        event_type: 0,
+                        action_id: state_upd.action_counter,
+                        market: market.key(),
+                        maker_order_id: posted_node.key(),
+                        maker_filled: false,
+                        maker: posted_node.owner(),
+                        taker: acc_user.key(),
+                        taker_side: Side::Bid as u8,
+                        amount: tokens_to_fill,
+                        price: posted_price,
+                    });
+                    let new_amount = posted_qty.checked_sub(tokens_to_fill).ok_or(error!(ErrorCode::Overflow))?;
+                    ob.index_mut::<Order>(OrderDT::AskOrder as u16, posted_node.slot() as usize).set_amount(new_amount);
+                    state_upd.prc_vault_balance = state_upd.prc_vault_balance.checked_add(tokens_part).ok_or(error!(ErrorCode::Overflow))?;
+                    state_upd.prc_order_balance = state_upd.prc_order_balance.checked_add(tokens_part).ok_or(error!(ErrorCode::Overflow))?;
+                    log_settlement(market, state_upd, acc_settle1, acc_settle2, &posted_node.owner(), false, tokens_part)?;
+                    break;
+                }
+            } else {
+                // Fill until price
+                let posted_part = scale_price(posted_qty, posted_price, mkt_decimal_factor)?;
+                if posted_part == price_to_fill {         // Match the entire order exactly
+                    tokens_filled = tokens_filled.checked_add(posted_qty).ok_or(error!(ErrorCode::Overflow))?;
+                    tokens_paid = tokens_paid.checked_add(posted_part).ok_or(error!(ErrorCode::Overflow))?;
+                    tokens_fee = tokens_fee.checked_add(calculate_fee(market.taker_fee, posted_part)?).ok_or(error!(ErrorCode::Overflow))?;
+                    msg!("Atellix: Filling - {} @ {}", tokens_filled.to_string(), posted_price.to_string());
+                    msg!("atellix-log");
+                    emit!(MatchEvent {
+                        event_type: 0,
+                        action_id: state_upd.action_counter,
+                        market: market.key(),
+                        maker_order_id: posted_node.key(),
+                        maker_filled: true,
+                        maker: posted_node.owner(),
+                        taker: acc_user.key(),
+                        taker_side: Side::Bid as u8,
+                        amount: posted_qty,
+                        price: posted_price,
+                    });
+                    map_remove(ob, DT::AskOrder, posted_node.key())?;
+                    Order::free_index(ob, DT::AskOrder, posted_node.slot())?;
+                    state_upd.prc_vault_balance = state_upd.prc_vault_balance.checked_add(posted_part).ok_or(error!(ErrorCode::Overflow))?;
+                    state_upd.prc_order_balance = state_upd.prc_order_balance.checked_add(posted_part).ok_or(error!(ErrorCode::Overflow))?;
+                    log_settlement(market, state_upd, acc_settle1, acc_settle2, &posted_node.owner(), false, posted_part)?;
+                    break;
+                } else if posted_part < price_to_fill {   // Match the entire order and continue
+                    price_to_fill = price_to_fill.checked_sub(posted_part).ok_or(error!(ErrorCode::Overflow))?;
+                    tokens_filled = tokens_filled.checked_add(posted_qty).ok_or(error!(ErrorCode::Overflow))?;
+                    tokens_paid = tokens_paid.checked_add(posted_part).ok_or(error!(ErrorCode::Overflow))?;
+                    tokens_fee = tokens_fee.checked_add(calculate_fee(market.taker_fee, posted_part)?).ok_or(error!(ErrorCode::Overflow))?;
+                    msg!("Atellix: Filling - {} @ {}", posted_qty.to_string(), posted_price.to_string());
+                    msg!("atellix-log");
+                    emit!(MatchEvent {
+                        event_type: 0,
+                        action_id: state_upd.action_counter,
+                        market: market.key(),
+                        maker_order_id: posted_node.key(),
+                        maker_filled: true,
+                        maker: posted_node.owner(),
+                        taker: acc_user.key(),
+                        taker_side: Side::Bid as u8,
+                        amount: posted_qty,
+                        price: posted_price,
+                    });
+                    map_remove(ob, DT::AskOrder, posted_node.key())?;
+                    Order::free_index(ob, DT::AskOrder, posted_node.slot())?;
+                    state_upd.prc_vault_balance = state_upd.prc_vault_balance.checked_add(posted_part).ok_or(error!(ErrorCode::Overflow))?;
+                    state_upd.prc_order_balance = state_upd.prc_order_balance.checked_add(posted_part).ok_or(error!(ErrorCode::Overflow))?;
+                    log_settlement(market, state_upd, acc_settle1, acc_settle2, &posted_node.owner(), false, posted_part)?;
+                } else if posted_part > price_to_fill {   // Match part of the order
+                    // Calculate filled tokens
+                    let fill_amount = fill_quantity(price_to_fill, posted_price, mkt_decimal_factor)?;
+                    tokens_filled = tokens_filled.checked_add(fill_amount).ok_or(error!(ErrorCode::Overflow))?;
+                    tokens_paid = tokens_paid.checked_add(price_to_fill).ok_or(error!(ErrorCode::Overflow))?;
+                    tokens_fee = tokens_fee.checked_add(calculate_fee(market.taker_fee, price_to_fill)?).ok_or(error!(ErrorCode::Overflow))?;
+                    msg!("Atellix: Filling - {} @ {}", fill_amount.to_string(), posted_price.to_string());
+                    msg!("atellix-log");
+                    emit!(MatchEvent {
+                        event_type: 0,
+                        action_id: state_upd.action_counter,
+                        market: market.key(),
+                        maker_order_id: posted_node.key(),
+                        maker_filled: false,
+                        maker: posted_node.owner(),
+                        taker: acc_user.key(),
+                        taker_side: Side::Bid as u8,
+                        amount: fill_amount,
+                        price: posted_price,
+                    });
+                    let new_amount = posted_qty.checked_sub(fill_amount).ok_or(error!(ErrorCode::Overflow))?;
+                    ob.index_mut::<Order>(OrderDT::AskOrder as u16, posted_node.slot() as usize).set_amount(new_amount);
+                    state_upd.prc_vault_balance = state_upd.prc_vault_balance.checked_add(price_to_fill).ok_or(error!(ErrorCode::Overflow))?;
+                    state_upd.prc_order_balance = state_upd.prc_order_balance.checked_add(price_to_fill).ok_or(error!(ErrorCode::Overflow))?;
+                    log_settlement(market, state_upd, acc_settle1, acc_settle2, &posted_node.owner(), false, price_to_fill)?;
+                    break;
+                }
+            }
+        }
+        msg!("Atellix: Fee: {}", tokens_fee.to_string());
+
+        let mut expired_count: u32 = 0;
+        if expired_orders.len() > 0 {
+            loop {
+                if expired_orders.len() == 0 || expired_count == MAX_EXPIRATIONS {
+                    break;
+                }
+                let expired_id: u128 = expired_orders.pop().unwrap();
+                let expire_leaf = map_get(ob, DT::AskOrder, expired_id).unwrap();
+                let expire_order = *ob.index::<Order>(OrderDT::AskOrder as u16, expire_leaf.slot() as usize);
+                let expire_amount: u64 = expire_order.amount();
+                msg!("Atellix: Expired Order[{}] - Owner: {} {} @ {}",
+                    expire_leaf.slot().to_string(),
+                    expire_leaf.owner().to_string(),
+                    expire_order.amount().to_string(),
+                    Order::price(expire_leaf.key()).to_string(),
+                );
+                msg!("atellix-log");
+                emit!(ExpireEvent {
+                    event_type: 0,
+                    action_id: state_upd.action_counter,
+                    market: market.key(),
+                    owner: expire_leaf.owner(),
+                    order_side: Side::Ask as u8,
+                    order_id: expired_id,
+                    price: Order::price(expire_leaf.key()),
+                    quantity: expire_amount,
+                });
+                log_settlement(market, state_upd, acc_settle1, acc_settle2, &expire_leaf.owner(), true, expire_amount)?; // No multiply for Ask order
+                map_remove(ob, DT::AskOrder, expire_leaf.key())?;
+                Order::free_index(ob, DT::AskOrder, expire_leaf.slot())?;
+                expired_count = expired_count + 1;
+            }
+        }
+
+        let mut result = TradeResult { tokens_filled: tokens_filled, tokens_posted: 0, tokens_deposited: 0, tokens_fee: tokens_fee, order_id: 0 };
+
+        if inp_fill && inp_by_quantity && tokens_filled != inp_quantity {
+            msg!("Order not filled");
+            return Err(ErrorCode::OrderNotFilled.into());
+        } else if inp_fill && !inp_by_quantity && tokens_paid == inp_net_price {
+            msg!("Order not filled");
+            return Err(ErrorCode::OrderNotFilled.into());
+        }
+
+        // Apply fees
+        tokens_paid = tokens_paid.checked_add(tokens_fee).ok_or(error!(ErrorCode::Overflow))?;
+        state_upd.prc_vault_balance = state_upd.prc_vault_balance.checked_add(tokens_fee).ok_or(error!(ErrorCode::Overflow))?;
+        state_upd.prc_fees_balance = state_upd.prc_fees_balance.checked_add(tokens_fee).ok_or(error!(ErrorCode::Overflow))?;
+
+        /*msg!("Atellix: Pricing Token Vault Deposit: {}", total_cost.to_string());
+        msg!("Atellix: Pricing Token Vault Balance: {} (Orderbook: {})",
+            state_upd.prc_vault_balance,
+            state_upd.prc_order_balance,
+        );*/
+
+        // Send tokens to the vault
+        let mint_type = MintType::try_from(market.prc_mint_type).map_err(|_| ErrorCode::InvalidParameters)?;
+        perform_transfer(ctx.remaining_accounts, mint_type, 0, tokens_paid,
+            &ctx.accounts.user_prc_token.to_account_info(),  // From
+            &ctx.accounts.prc_vault.to_account_info(),       // To
+            &ctx.accounts.user.to_account_info(),            // Auth
+            &ctx.accounts.spl_token_prog.to_account_info(),  // SPL Token Program
+            &ctx.accounts.ast_token_prog.to_account_info(),  // AST Token Program
+        )?;
+        result.set_tokens_deposited(tokens_paid);
+
+        if tokens_filled > 0 {
+            // Withdraw tokens from the vault
+            state_upd.mkt_vault_balance = state_upd.mkt_vault_balance.checked_sub(tokens_filled).ok_or(error!(ErrorCode::Overflow))?;
+            state_upd.mkt_order_balance = state_upd.mkt_order_balance.checked_sub(tokens_filled).ok_or(error!(ErrorCode::Overflow))?;
+
+            /*msg!("Atellix: Market Token Vault Withdraw: {}", tokens_filled.to_string());
+            msg!("Atellix: Market Token Vault Balance: {} (Orderbook: {})",
+                state_upd.mkt_vault_balance,
+                state_upd.mkt_order_balance,
+            );*/
+
+            let seeds = &[market.to_account_info().key.as_ref(), &[market.agent_nonce]];
+            let signer = &[&seeds[..]];
+            let mint_type = MintType::try_from(market.mkt_mint_type).map_err(|_| ErrorCode::InvalidParameters)?;
+            perform_signed_transfer(ctx.remaining_accounts, signer, mint_type, 0, tokens_filled,
+                &ctx.accounts.mkt_vault.to_account_info(),          // From
+                &ctx.accounts.user_mkt_token.to_account_info(),     // To
+                &ctx.accounts.agent.to_account_info(),              // Auth
+                &ctx.accounts.spl_token_prog.to_account_info(),     // SPL Token Program
+                &ctx.accounts.ast_token_prog.to_account_info(),     // AST Token Program
+            )?;
+        }
+        store_struct::<TradeResult>(&result, acc_result)?;
+
+        msg!("atellix-log");
+        emit!(OrderEvent {
+            event_type: 0,
+            action_id: state_upd.action_counter,
+            market: market.key(),
+            user: acc_user.key(),
+            market_token: ctx.accounts.user_mkt_token.key(),
+            pricing_token: ctx.accounts.user_prc_token.key(),
+            order_id: 0,
+            order_side: Side::Bid as u8,
+            filled: tokens_filled == inp_quantity,
+            tokens_filled: tokens_filled,
+            tokens_deposited: tokens_paid,
+            tokens_fee: tokens_fee,
+            posted: false,
+            posted_quantity: 0,
+            order_price: inp_net_price,
+            order_quantity: inp_quantity,
+        });
+
+        Ok(())
+    }
+
+    pub fn market_ask<'a, 'b, 'c, 'info>(ctx: Context<'a, 'b, 'c, 'info, OrderContext<'info>>,
+        inp_rollover: bool,     // Perform settlement log rollover
+        inp_by_quantity: bool,  // Fill by quantity (otherwise price)
+        inp_quantity: u64,      // Fill until quantity
+        inp_net_price: u64,     // Fill until net price is reached
+        inp_fill: bool,         // Require orders that are not posted to be filled completely
+    ) -> anchor_lang::Result<()> {
+        let clock = Clock::get()?;
+        let clock_ts = clock.unix_timestamp;
+
+        let market = &mut ctx.accounts.market;
+        let market_state = &ctx.accounts.state;
+        let acc_agent = &ctx.accounts.agent.to_account_info();
+        let acc_user = &ctx.accounts.user.to_account_info();
+        let acc_mkt_vault = &ctx.accounts.mkt_vault.to_account_info();
+        let acc_prc_vault = &ctx.accounts.prc_vault.to_account_info();
+        let acc_orders = &ctx.accounts.orders.to_account_info();
+        let acc_settle1 = &ctx.accounts.settle_a.to_account_info();
+        let acc_settle2 = &ctx.accounts.settle_b.to_account_info();
+        let acc_result = &ctx.accounts.result.to_account_info();
+
+        if !market.active {
+            msg!("Market closed");
+            return Err(ErrorCode::MarketClosed.into());
+        }
+
+        verify_matching_accounts(&market.state, &market_state.key(), Some(String::from("Invalid market state")))?;
+        verify_matching_accounts(&market.agent, &acc_agent.key, Some(String::from("Invalid market agent")))?;
+        verify_matching_accounts(&market.mkt_vault, &acc_mkt_vault.key, Some(String::from("Invalid market token vault")))?;
+        verify_matching_accounts(&market.prc_vault, &acc_prc_vault.key, Some(String::from("Invalid pricing token vault")))?;
+        verify_matching_accounts(&market.orders, &acc_orders.key, Some(String::from("Invalid orderbook")))?;
+
+        let s1 = verify_matching_accounts(&market.settle_a, &acc_settle1.key, Some(String::from("Settlement log 1")));
+        let s2 = verify_matching_accounts(&market.settle_b, &acc_settle2.key, Some(String::from("Settlement log 2")));
+        if s1.is_err() || s2.is_err() {
+            // This is expected to happen sometimes due to a race condition between settlment log rollovers and new orders
+            // Reload the current "market" account with the latest settlement log accounts and retry the transaction
+            msg!("Please update market data and retry");
+            return Err(ErrorCode::RetrySettlementAccount.into()); 
+        }
+
+        // Append a settlement log account
+        if inp_rollover {
+            if !market.log_rollover {
+                // Another market participant already appended an new log account (please retry transaction)
+                msg!("Please update market data and retry");
+                return Err(ErrorCode::RetrySettlementAccount.into());
+            }
+            let av = ctx.remaining_accounts;
+            let new_settlment_log = av.get(0).unwrap();
+            let market_pk: Pubkey = market.key();
+            log_rollover(market, market_pk, acc_settle2, new_settlment_log)?;
+        }
+
+        msg!("Atellix: Market Ask: {}", inp_quantity.to_string());
+
+        let state_upd = &mut ctx.accounts.state;
+        state_upd.action_counter = state_upd.action_counter.checked_add(1).ok_or(error!(ErrorCode::Overflow))?;
+
+        let orderbook_data: &mut[u8] = &mut acc_orders.try_borrow_mut_data()?;
+        let ob = SlabPageAlloc::new(orderbook_data);
+
+        let mkt_decimal_base: u64 = 10;
+        let mkt_decimal_factor: u64 = mkt_decimal_base.pow(market.mkt_decimals as u32);
+
+        // Check if order can be filled
+        let mut price_to_fill: u64 = inp_net_price;
+        let mut tokens_to_fill: u64 = inp_quantity;
+        let mut tokens_filled: u64 = 0;
+        let mut tokens_received: u64 = 0;
+        let mut tokens_fee: u64 = 0;
+        let mut expired_orders = Vec::new();
+        loop {
+            let node_res = map_predicate_max(ob, DT::BidOrder, |sl, leaf|
+                valid_order(OrderDT::BidOrder, leaf, acc_user.key, sl, &mut expired_orders, clock_ts)
+            );
+            if node_res.is_none() {
+                msg!("Atellix: No Match");
+                break;
+            }
+            let posted_node = node_res.unwrap();
+            let posted_order = ob.index::<Order>(OrderDT::BidOrder as u16, posted_node.slot() as usize);
+            let posted_qty = posted_order.amount;
+            let posted_price = Order::price(posted_node.key());
+            msg!("Atellix: Matched Bid [{}] {} @ {}", posted_node.slot().to_string(), posted_qty.to_string(), posted_price.to_string());
+            if inp_by_quantity {
+                // Fill order by quantity
+                if posted_qty == tokens_to_fill {         // Match the entire order exactly
+                    tokens_filled = tokens_filled.checked_add(tokens_to_fill).ok_or(error!(ErrorCode::Overflow))?;
+                    let tokens_part = scale_price(tokens_to_fill, posted_price, mkt_decimal_factor)?;
+                    tokens_received = tokens_received.checked_add(tokens_part).ok_or(error!(ErrorCode::Overflow))?;
+                    tokens_fee = tokens_fee.checked_add(calculate_fee(market.taker_fee, tokens_part)?).ok_or(error!(ErrorCode::Overflow))?;
+                    msg!("Atellix: Filling - {} @ {}", tokens_part.to_string(), posted_price.to_string());
+                    msg!("atellix-log");
+                    emit!(MatchEvent {
+                        event_type: 0,
+                        action_id: state_upd.action_counter,
+                        market: market.key(),
+                        maker_order_id: posted_node.key(),
+                        maker_filled: true,
+                        maker: posted_node.owner(),
+                        taker: acc_user.key(),
+                        taker_side: Side::Ask as u8,
+                        amount: tokens_to_fill,
+                        price: posted_price,
+                    });
+                    map_remove(ob, DT::BidOrder, posted_node.key())?;
+                    Order::free_index(ob, DT::BidOrder, posted_node.slot())?;
+                    state_upd.mkt_vault_balance = state_upd.mkt_vault_balance.checked_add(tokens_to_fill).ok_or(error!(ErrorCode::Overflow))?;
+                    state_upd.mkt_order_balance = state_upd.mkt_order_balance.checked_add(tokens_to_fill).ok_or(error!(ErrorCode::Overflow))?;
+                    log_settlement(market, state_upd, acc_settle1, acc_settle2, &posted_node.owner(), true, tokens_to_fill)?;
+                    break;
+                } else if posted_qty < tokens_to_fill {   // Match the entire order and continue
+                    tokens_to_fill = tokens_to_fill.checked_sub(posted_qty).ok_or(error!(ErrorCode::Overflow))?;
+                    tokens_filled = tokens_filled.checked_add(posted_qty).ok_or(error!(ErrorCode::Overflow))?;
+                    let tokens_part = scale_price(posted_qty, posted_price, mkt_decimal_factor)?;
+                    tokens_received = tokens_received.checked_add(tokens_part).ok_or(error!(ErrorCode::Overflow))?;
+                    tokens_fee = tokens_fee.checked_add(calculate_fee(market.taker_fee, tokens_part)?).ok_or(error!(ErrorCode::Overflow))?;
+                    msg!("Atellix: Filling - {} @ {}", posted_qty.to_string(), posted_price.to_string());
+                    msg!("atellix-log");
+                    emit!(MatchEvent {
+                        event_type: 0,
+                        action_id: state_upd.action_counter,
+                        market: market.key(),
+                        maker_order_id: posted_node.key(),
+                        maker_filled: true,
+                        maker: posted_node.owner(),
+                        taker: acc_user.key(),
+                        taker_side: Side::Ask as u8,
+                        amount: posted_qty,
+                        price: posted_price,
+                    });
+                    map_remove(ob, DT::BidOrder, posted_node.key())?;
+                    Order::free_index(ob, DT::BidOrder, posted_node.slot())?;
+                    state_upd.mkt_vault_balance = state_upd.mkt_vault_balance.checked_add(posted_qty).ok_or(error!(ErrorCode::Overflow))?;
+                    state_upd.mkt_order_balance = state_upd.mkt_order_balance.checked_add(posted_qty).ok_or(error!(ErrorCode::Overflow))?;
+                    log_settlement(market, state_upd, acc_settle1, acc_settle2, &posted_node.owner(), true, posted_qty)?;
+                } else if posted_qty > tokens_to_fill {   // Match part of the order
+                    tokens_filled = tokens_filled.checked_add(tokens_to_fill).ok_or(error!(ErrorCode::Overflow))?;
+                    let tokens_part = scale_price(tokens_to_fill, posted_price, mkt_decimal_factor)?;
+                    tokens_received = tokens_received.checked_add(tokens_part).ok_or(error!(ErrorCode::Overflow))?;
+                    tokens_fee = tokens_fee.checked_add(calculate_fee(market.taker_fee, tokens_part)?).ok_or(error!(ErrorCode::Overflow))?;
+                    msg!("Atellix: Filling - {} @ {}", tokens_to_fill.to_string(), posted_price.to_string());
+                    msg!("atellix-log");
+                    emit!(MatchEvent {
+                        event_type: 0,
+                        action_id: state_upd.action_counter,
+                        market: market.key(),
+                        maker_order_id: posted_node.key(),
+                        maker_filled: false,
+                        maker: posted_node.owner(),
+                        taker: acc_user.key(),
+                        taker_side: Side::Ask as u8,
+                        amount: tokens_to_fill,
+                        price: posted_price,
+                    });
+                    let new_amount = posted_qty.checked_sub(tokens_to_fill).ok_or(error!(ErrorCode::Overflow))?;
+                    ob.index_mut::<Order>(OrderDT::BidOrder as u16, posted_node.slot() as usize).set_amount(new_amount);
+                    state_upd.mkt_vault_balance = state_upd.mkt_vault_balance.checked_add(tokens_to_fill).ok_or(error!(ErrorCode::Overflow))?;
+                    state_upd.mkt_order_balance = state_upd.mkt_order_balance.checked_add(tokens_to_fill).ok_or(error!(ErrorCode::Overflow))?;
+                    log_settlement(market, state_upd, acc_settle1, acc_settle2, &posted_node.owner(), true, tokens_to_fill)?;
+                    break;
+                }
+            } else {
+                // Fill until price
+                let posted_part = scale_price(posted_qty, posted_price, mkt_decimal_factor)?;
+                if posted_part == price_to_fill {         // Match the entire order exactly
+                    tokens_filled = tokens_filled.checked_add(posted_qty).ok_or(error!(ErrorCode::Overflow))?;
+                    tokens_received = tokens_received.checked_add(posted_part).ok_or(error!(ErrorCode::Overflow))?;
+                    tokens_fee = tokens_fee.checked_add(calculate_fee(market.taker_fee, posted_part)?).ok_or(error!(ErrorCode::Overflow))?;
+                    msg!("Atellix: Filling - {} @ {}", posted_qty.to_string(), posted_price.to_string());
+                    msg!("atellix-log");
+                    emit!(MatchEvent {
+                        event_type: 0,
+                        action_id: state_upd.action_counter,
+                        market: market.key(),
+                        maker_order_id: posted_node.key(),
+                        maker_filled: true,
+                        maker: posted_node.owner(),
+                        taker: acc_user.key(),
+                        taker_side: Side::Ask as u8,
+                        amount: posted_qty,
+                        price: posted_price,
+                    });
+                    map_remove(ob, DT::BidOrder, posted_node.key())?;
+                    Order::free_index(ob, DT::BidOrder, posted_node.slot())?;
+                    state_upd.mkt_vault_balance = state_upd.mkt_vault_balance.checked_add(posted_qty).ok_or(error!(ErrorCode::Overflow))?;
+                    state_upd.mkt_order_balance = state_upd.mkt_order_balance.checked_add(posted_qty).ok_or(error!(ErrorCode::Overflow))?;
+                    log_settlement(market, state_upd, acc_settle1, acc_settle2, &posted_node.owner(), true, posted_qty)?;
+                    break;
+                } else if posted_part < price_to_fill {   // Match the entire order and continue
+                    price_to_fill = price_to_fill.checked_sub(posted_part).ok_or(error!(ErrorCode::Overflow))?;
+                    tokens_filled = tokens_filled.checked_add(posted_qty).ok_or(error!(ErrorCode::Overflow))?;
+                    tokens_received = tokens_received.checked_add(posted_part).ok_or(error!(ErrorCode::Overflow))?;
+                    tokens_fee = tokens_fee.checked_add(calculate_fee(market.taker_fee, posted_part)?).ok_or(error!(ErrorCode::Overflow))?;
+                    msg!("Atellix: Filling - {} @ {}", posted_qty.to_string(), posted_price.to_string());
+                    msg!("atellix-log");
+                    emit!(MatchEvent {
+                        event_type: 0,
+                        action_id: state_upd.action_counter,
+                        market: market.key(),
+                        maker_order_id: posted_node.key(),
+                        maker_filled: true,
+                        maker: posted_node.owner(),
+                        taker: acc_user.key(),
+                        taker_side: Side::Ask as u8,
+                        amount: posted_qty,
+                        price: posted_price,
+                    });
+                    map_remove(ob, DT::BidOrder, posted_node.key())?;
+                    Order::free_index(ob, DT::BidOrder, posted_node.slot())?;
+                    state_upd.mkt_vault_balance = state_upd.mkt_vault_balance.checked_add(posted_qty).ok_or(error!(ErrorCode::Overflow))?;
+                    state_upd.mkt_order_balance = state_upd.mkt_order_balance.checked_add(posted_qty).ok_or(error!(ErrorCode::Overflow))?;
+                    log_settlement(market, state_upd, acc_settle1, acc_settle2, &posted_node.owner(), true, posted_qty)?;
+                } else if posted_part > price_to_fill {   // Match part of the order
+                    let fill_amount = fill_quantity(price_to_fill, posted_price, mkt_decimal_factor)?;
+                    tokens_filled = tokens_filled.checked_add(fill_amount).ok_or(error!(ErrorCode::Overflow))?;
+                    tokens_received = tokens_received.checked_add(price_to_fill).ok_or(error!(ErrorCode::Overflow))?;
+                    tokens_fee = tokens_fee.checked_add(calculate_fee(market.taker_fee, price_to_fill)?).ok_or(error!(ErrorCode::Overflow))?;
+                    msg!("Atellix: Filling - {} @ {}", fill_amount.to_string(), posted_price.to_string());
+                    msg!("atellix-log");
+                    emit!(MatchEvent {
+                        event_type: 0,
+                        action_id: state_upd.action_counter,
+                        market: market.key(),
+                        maker_order_id: posted_node.key(),
+                        maker_filled: false,
+                        maker: posted_node.owner(),
+                        taker: acc_user.key(),
+                        taker_side: Side::Ask as u8,
+                        amount: fill_amount,
+                        price: posted_price,
+                    });
+                    let new_amount = posted_qty.checked_sub(fill_amount).ok_or(error!(ErrorCode::Overflow))?;
+                    ob.index_mut::<Order>(OrderDT::BidOrder as u16, posted_node.slot() as usize).set_amount(new_amount);
+                    state_upd.mkt_vault_balance = state_upd.mkt_vault_balance.checked_add(fill_amount).ok_or(error!(ErrorCode::Overflow))?;
+                    state_upd.mkt_order_balance = state_upd.mkt_order_balance.checked_add(fill_amount).ok_or(error!(ErrorCode::Overflow))?;
+                    log_settlement(market, state_upd, acc_settle1, acc_settle2, &posted_node.owner(), true, fill_amount)?;
+                    break;
+                }
+            }
+        }
+
+        msg!("Atellix: Fee: {}", tokens_fee.to_string());
+
+        let mut expired_count: u32 = 0;
+        if expired_orders.len() > 0 {
+            loop {
+                if expired_orders.len() == 0 || expired_count == MAX_EXPIRATIONS {
+                    break;
+                }
+                let expired_id: u128 = expired_orders.pop().unwrap();
+                let expire_leaf = map_get(ob, DT::BidOrder, expired_id).unwrap();
+                let expire_order = *ob.index::<Order>(OrderDT::BidOrder as u16, expire_leaf.slot() as usize);
+                let expire_amount: u64 = expire_order.amount();
+                msg!("Atellix: Expired Order[{}] - Owner: {} {} @ {}",
+                    expire_leaf.slot().to_string(),
+                    expire_leaf.owner().to_string(),
+                    expire_order.amount().to_string(),
+                    Order::price(expire_leaf.key()).to_string(),
+                );
+                let expire_price = Order::price(expire_leaf.key());
+                let expire_total = expire_amount.checked_mul(expire_price).ok_or(error!(ErrorCode::Overflow))?;
+                msg!("atellix-log");
+                emit!(ExpireEvent {
+                    event_type: 0,
+                    action_id: state_upd.action_counter,
+                    market: market.key(),
+                    owner: expire_leaf.owner(),
+                    order_side: Side::Bid as u8,
+                    order_id: expired_id,
+                    price: Order::price(expire_leaf.key()),
+                    quantity: expire_amount,
+                });
+                log_settlement(market, state_upd, acc_settle1, acc_settle2, &expire_leaf.owner(), false, expire_total)?; // Total calculated
+                map_remove(ob, DT::BidOrder, expire_leaf.key())?;
+                Order::free_index(ob, DT::BidOrder, expire_leaf.slot())?;
+                expired_count = expired_count + 1;
+            }
+        }
+
+        let mut result = TradeResult { tokens_filled: tokens_filled, tokens_posted: 0, tokens_deposited: 0, tokens_fee: tokens_fee, order_id: 0 };
+
+        // Add order to orderbook if not filled
+        if inp_fill && inp_quantity != tokens_filled {
+            msg!("Order not filled");
+            return Err(ErrorCode::OrderNotFilled.into());
+        }
+
+        /*msg!("Atellix: Market Token Vault Deposit: {}", inp_quantity.to_string());
+        msg!("Atellix: Market Token Vault Balance: {} (Orderbook: {})",
+            state_upd.mkt_vault_balance,
+            state_upd.mkt_order_balance,
+        );*/
+
+        // TODO: Pay for settlement log space
+
+        // Send tokens to the vault
+        let mint_type = MintType::try_from(market.mkt_mint_type).map_err(|_| ErrorCode::InvalidParameters)?;
+        perform_transfer(ctx.remaining_accounts, mint_type, 0, inp_quantity,
+            &ctx.accounts.user_mkt_token.to_account_info(),  // From
+            &ctx.accounts.mkt_vault.to_account_info(),       // To
+            &ctx.accounts.user.to_account_info(),            // Auth
+            &ctx.accounts.spl_token_prog.to_account_info(),  // SPL Token Program
+            &ctx.accounts.ast_token_prog.to_account_info(),  // AST Token Program
+        )?;
+        result.set_tokens_deposited(inp_quantity);
+
+        if tokens_filled > 0 {
+            // Withdraw tokens from the vault
+            state_upd.prc_vault_balance = state_upd.prc_vault_balance.checked_sub(tokens_received).ok_or(error!(ErrorCode::Overflow))?;
+            state_upd.prc_order_balance = state_upd.prc_order_balance.checked_sub(tokens_received).ok_or(error!(ErrorCode::Overflow))?;
+
+            // Apply fees
+            tokens_received = tokens_received.checked_sub(tokens_fee).ok_or(error!(ErrorCode::Overflow))?;
+            state_upd.prc_vault_balance = state_upd.prc_vault_balance.checked_add(tokens_fee).ok_or(error!(ErrorCode::Overflow))?;
+            state_upd.prc_fees_balance = state_upd.prc_fees_balance.checked_add(tokens_fee).ok_or(error!(ErrorCode::Overflow))?;
+
+            //msg!("Atellix: Pricing Token Vault Withdraw: {}", tokens_received.to_string());
+            /*msg!("Atellix: Pricing Token Vault Balance: {} (Orderbook: {})",
+                state_upd.prc_vault_balance,
+                state_upd.prc_order_balance,
+            );*/
+
+            let seeds = &[
+                market.to_account_info().key.as_ref(),
+                &[market.agent_nonce],
+            ];
+            let signer = &[&seeds[..]];
+            let mint_type = MintType::try_from(market.prc_mint_type).map_err(|_| ErrorCode::InvalidParameters)?;
+            perform_signed_transfer(ctx.remaining_accounts, signer, mint_type, 0, tokens_received,
+                &ctx.accounts.prc_vault.to_account_info(),          // From
+                &ctx.accounts.user_prc_token.to_account_info(),     // To
+                &ctx.accounts.agent.to_account_info(),              // Auth
+                &ctx.accounts.spl_token_prog.to_account_info(),     // SPL Token Program
+                &ctx.accounts.ast_token_prog.to_account_info(),     // AST Token Program
+            )?;
+        }
+        store_struct::<TradeResult>(&result, acc_result)?;
+
+        msg!("atellix-log");
+        emit!(OrderEvent {
+            event_type: 0,
+            action_id: state_upd.action_counter,
+            market: market.key(),
+            user: acc_user.key(),
+            market_token: ctx.accounts.user_mkt_token.key(),
+            pricing_token: ctx.accounts.user_prc_token.key(),
+            order_id: result.order_id,
+            order_side: Side::Ask as u8,
+            filled: inp_quantity == tokens_filled,
+            tokens_filled: result.tokens_filled,
+            tokens_deposited: result.tokens_deposited,
+            tokens_fee: result.tokens_fee,
+            posted: result.tokens_posted > 0,
+            posted_quantity: result.tokens_posted,
+            order_price: inp_net_price,
+            order_quantity: inp_quantity,
+        });
+
         Ok(())
     }
 
@@ -1453,12 +2269,16 @@ pub mod aqua_dex {
         }
         let order = sl.index::<Order>(index_datatype(order_type), leaf.slot() as usize);
         let state = &mut ctx.accounts.state;
+        state.action_counter = state.action_counter.checked_add(1).ok_or(error!(ErrorCode::Overflow))?;
         let mut result = WithdrawResult { mkt_tokens: 0, prc_tokens: 0 };
+        let order_id = leaf.key();
+        let order_price = Order::price(order_id);
+        let order_qty = order.amount();
         let tokens_out = match side {
             Side::Bid => {
                 let mkt_decimal_base: u64 = 10;
                 let mkt_decimal_factor: u64 = mkt_decimal_base.pow(market.mkt_decimals as u32);
-                let total = scale_price(order.amount(), Order::price(leaf.key()), mkt_decimal_factor)?;
+                let total = scale_price(order_qty, order_price, mkt_decimal_factor)?;
                 result.set_prc_tokens(total);
                 state.prc_vault_balance = state.prc_vault_balance.checked_sub(total).ok_or(error!(ErrorCode::Overflow))?;
                 state.prc_order_balance = state.prc_order_balance.checked_sub(total).ok_or(error!(ErrorCode::Overflow))?;
@@ -1497,6 +2317,24 @@ pub mod aqua_dex {
             )?;
         }
         store_struct::<WithdrawResult>(&result, acc_result)?;
+
+        msg!("atellix-log");
+        emit!(CancelEvent {
+            event_type: 0,
+            action_id: state.action_counter,
+            market: ctx.accounts.market.key(),
+            owner: acc_user.key(),
+            user: acc_user.key(),
+            market_token: ctx.accounts.user_mkt_token.key(),
+            pricing_token: ctx.accounts.user_prc_token.key(),
+            manager: false,
+            order_side: side as u8,
+            order_id: order_id,
+            order_price: order_price,
+            order_quantity: order_qty,
+            token_withdrawn: tokens_out,
+        });
+
         Ok(())
     }
 
@@ -1516,6 +2354,10 @@ pub mod aqua_dex {
         verify_matching_accounts(&market.mkt_vault, &acc_mkt_vault.key, Some(String::from("Invalid market token vault")))?;
         verify_matching_accounts(&market.prc_vault, &acc_prc_vault.key, Some(String::from("Invalid pricing token vault")))?;
 
+        state.action_counter = state.action_counter.checked_add(1).ok_or(error!(ErrorCode::Overflow))?;
+
+        let mut market_tokens: u64 = 0;
+        let mut pricing_tokens: u64 = 0;
         let owner_id: u128 = CritMap::bytes_hash(acc_user.key.as_ref());
         let log_data: &mut[u8] = &mut acc_settle.try_borrow_mut_data()?;
         let (header, page_table) = mut_array_refs![log_data, size_of::<AccountsHeader>(); .. ;];
@@ -1530,7 +2372,8 @@ pub mod aqua_dex {
             let signer = &[&seeds[..]];
             let mut result = WithdrawResult { mkt_tokens: 0, prc_tokens: 0 };
             if log_entry.mkt_token_balance() > 0 {
-                result.set_mkt_tokens(log_entry.mkt_token_balance());
+                market_tokens = log_entry.mkt_token_balance();
+                result.set_mkt_tokens(market_tokens);
                 let mint_type = MintType::try_from(market.mkt_mint_type).map_err(|_| ErrorCode::InvalidParameters)?;
                 perform_signed_transfer(ctx.remaining_accounts, signer, mint_type, 0, log_entry.mkt_token_balance(),
                     &ctx.accounts.mkt_vault.to_account_info(),          // From
@@ -1539,11 +2382,12 @@ pub mod aqua_dex {
                     &ctx.accounts.spl_token_prog.to_account_info(),     // SPL Token Program
                     &ctx.accounts.ast_token_prog.to_account_info(),     // AST Token Program
                 )?;
-                state.mkt_vault_balance = state.mkt_vault_balance.checked_sub(log_entry.mkt_token_balance())
+                state.mkt_vault_balance = state.mkt_vault_balance.checked_sub(market_tokens)
                     .ok_or(error!(ErrorCode::Overflow))?;
             }
             if log_entry.prc_token_balance() > 0 {
-                result.set_prc_tokens(log_entry.prc_token_balance());
+                pricing_tokens = log_entry.prc_token_balance();
+                result.set_prc_tokens(pricing_tokens);
                 let mint_type = MintType::try_from(market.prc_mint_type).map_err(|_| ErrorCode::InvalidParameters)?;
                 perform_signed_transfer(ctx.remaining_accounts, signer, mint_type, 0, log_entry.prc_token_balance(),
                     &ctx.accounts.prc_vault.to_account_info(),          // From
@@ -1552,7 +2396,7 @@ pub mod aqua_dex {
                     &ctx.accounts.spl_token_prog.to_account_info(),     // SPL Token Program
                     &ctx.accounts.ast_token_prog.to_account_info(),     // AST Token Program
                 )?;
-                state.prc_vault_balance = state.prc_vault_balance.checked_sub(log_entry.prc_token_balance())
+                state.prc_vault_balance = state.prc_vault_balance.checked_sub(pricing_tokens)
                     .ok_or(error!(ErrorCode::Overflow))?;
             }
             // Remove log entry
@@ -1564,6 +2408,21 @@ pub mod aqua_dex {
             msg!("Account not found");
             return Err(ErrorCode::AccountNotFound.into());
         }
+
+        msg!("atellix-log");
+        emit!(WithdrawEvent {
+            event_type: 0,
+            action_id: state.action_counter,
+            market: ctx.accounts.market.key(),
+            owner: ctx.accounts.user.key(),
+            user: ctx.accounts.user.key(),
+            market_token: ctx.accounts.user_mkt_token.key(),
+            pricing_token: ctx.accounts.user_prc_token.key(),
+            manager: false,
+            market_tokens: market_tokens,
+            pricing_tokens: pricing_tokens,
+        });
+
         Ok(())
     }
 }
@@ -1701,6 +2560,9 @@ pub struct Market {
     pub expire_enable: bool,            // Enable order expiration
     pub expire_min: i64,                // Minimum time an order must be posted before expiration
     pub log_rollover: bool,             // Request for a new settlement log account for rollover
+    /*pub log_fee: u64,                   // Fee for settlement log space for posted orders
+    pub log_rebate: u64,                // Rebate for withdrawal
+    pub log_reimburse: u64,             // Reimbursement for adding a new settlement log*/
     pub taker_fee: u32,                 // Taker commission fee
     pub state: Pubkey,                  // Market statistics (frequently updated market details)
     pub agent: Pubkey,                  // Program derived address for signing transfers
@@ -1724,7 +2586,6 @@ pub struct Market {
 
 #[account]
 pub struct MarketState {
-    // TODO: Implement action_counter
     pub action_counter: u64,            // Action ids
     pub order_counter: u64,             // Order index for Critmap ids (lower 64 bits)
     pub active_bid: u64,                // Active bid orders in the orderbook
@@ -1783,6 +2644,7 @@ impl WithdrawResult {
 #[event]
 pub struct MatchEvent {
     pub event_type: u128,
+    pub action_id: u64,
     pub market: Pubkey,
     pub maker_order_id: u128,
     pub maker_filled: bool,
@@ -1793,17 +2655,68 @@ pub struct MatchEvent {
     pub price: u64,
 }
 
-/*#[event]
+#[event]
 pub struct OrderEvent {
+    pub event_type: u128,
+    pub action_id: u64,
     pub market: Pubkey,
+    pub user: Pubkey,
+    pub market_token: Pubkey,
+    pub pricing_token: Pubkey,
     pub order_side: u8,
     pub order_id: u128,
-    pub maker: Pubkey,
-    pub taker: Pubkey,
-    pub amount: u64,
-    pub price: u64,
     pub filled: bool,
-}*/
+    pub tokens_filled: u64,
+    pub tokens_deposited: u64,
+    pub tokens_fee: u64,
+    pub posted: bool,
+    pub posted_quantity: u64,
+    pub order_price: u64,
+    pub order_quantity: u64,
+}
+
+#[event]
+pub struct CancelEvent {
+    pub event_type: u128,
+    pub action_id: u64,
+    pub market: Pubkey,
+    pub owner: Pubkey,
+    pub user: Pubkey,
+    pub market_token: Pubkey,
+    pub pricing_token: Pubkey,
+    pub manager: bool,
+    pub order_side: u8,
+    pub order_id: u128,
+    pub order_price: u64,
+    pub order_quantity: u64,
+    pub token_withdrawn: u64,
+}
+
+#[event]
+pub struct ExpireEvent {
+    pub event_type: u128,
+    pub action_id: u64,
+    pub market: Pubkey,
+    pub owner: Pubkey,
+    pub order_side: u8,
+    pub order_id: u128,
+    pub price: u64,
+    pub quantity: u64,
+}
+
+#[event]
+pub struct WithdrawEvent {
+    pub event_type: u128,
+    pub action_id: u64,
+    pub market: Pubkey,
+    pub owner: Pubkey,
+    pub user: Pubkey,
+    pub market_token: Pubkey,
+    pub pricing_token: Pubkey,
+    pub manager: bool,
+    pub market_tokens: u64,
+    pub pricing_tokens: u64,
+}
 
 #[account]
 pub struct SemverRelease {
@@ -1830,6 +2743,8 @@ pub enum ErrorCode {
     InvalidAccount,
     #[msg("Invalid derived account")]
     InvalidDerivedAccount,
+    #[msg("Order not filled")]
+    OrderNotFilled,
     #[msg("Internal error")]
     InternalError,
     #[msg("External error")]
