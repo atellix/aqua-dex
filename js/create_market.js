@@ -64,8 +64,8 @@ async function main() {
     securityTokenPK = new PublicKey('8JxtmFxuhmgoEFmBeZAqBVouj6DDQBwybpJnpqcYUU8M')
 
     //market = anchor.web3.Keypair.generate()
-    marketPK = new PublicKey('9ZB5Q5pWMHRiyV5v1GbDqBWjbk8FQrtNGjfedvYhGVo7')
-    marketAuthPK = new PublicKey('BXmUTAeeLuWHjy3crDho1YvAvje2NrJwcqnwnkDZMmDb')
+    marketPK = new PublicKey('DwfDU3uR3BAkSMYyLz8KXa3uug82NAfwU7QUa4ZV2ZRD')
+    marketAuthPK = new PublicKey('HnsDLQ4VHV4JDRbPSTHfsSubWo8DRpz6atKsFhhDNgYu')
     marketState = anchor.web3.Keypair.generate()
     orders = anchor.web3.Keypair.generate()
     settle1 = anchor.web3.Keypair.generate()
