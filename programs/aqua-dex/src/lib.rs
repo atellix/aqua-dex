@@ -390,6 +390,7 @@ fn settle_account(settle: &AccountInfo, owner_id: u128, owner: &Pubkey, mkt_toke
 }
 
 fn log_settlement(
+    market_key: &Pubkey, 
     state: &mut MarketState, 
     settle_a: &AccountInfo,
     settle_b: &AccountInfo,
@@ -399,12 +400,14 @@ fn log_settlement(
 ) -> anchor_lang::Result<()> {
     msg!("Atellix: Log Settlement");
     let new_balance: u64;
+    let mut log_key: Pubkey = settle_a.key();
     let owner_id: u128 = CritMap::bytes_hash(owner.as_ref());
     let res = settle_account(settle_a, owner_id, owner, mkt_token, amount);
     if res.is_err() {
         let err = res.unwrap_err();
         if err == error!(ErrorCode::SettlementLogFull) {
             state.log_rollover = true;
+            log_key = settle_b.key();
             let res2 = settle_account(settle_b, owner_id, owner, mkt_token, amount);
             if res2.is_err() {
                 let err2 = res2.unwrap_err();
@@ -441,6 +444,17 @@ fn log_settlement(
             state.prc_order_balance.to_string(),
         );*/
     }
+
+    msg!("atellix-log");
+    emit!(SettleEvent {
+        event_type: 0,
+        action_id: state.action_counter,
+        market: *market_key,
+        owner: *owner,
+        settlement_log: log_key,
+        market_tokens: if mkt_token { amount } else { 0 },
+        pricing_tokens: if !mkt_token { amount } else { 0 },
+    });
 
     Ok(())
 }
@@ -943,7 +957,7 @@ pub mod aqua_dex {
                     });
                     map_remove(ob, DT::AskOrder, posted_node.key())?;
                     Order::free_index(ob, DT::AskOrder, posted_node.slot())?;
-                    log_settlement(state_upd, acc_settle1, acc_settle2, &posted_node.owner(), false, tokens_part)?;
+                    log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &posted_node.owner(), false, tokens_part)?;
                     state_upd.active_ask = state_upd.active_ask.checked_sub(1).ok_or(error!(ErrorCode::Overflow))?;
                     state_upd.last_price = posted_price;
                     break;
@@ -969,7 +983,7 @@ pub mod aqua_dex {
                     });
                     map_remove(ob, DT::AskOrder, posted_node.key())?;
                     Order::free_index(ob, DT::AskOrder, posted_node.slot())?;
-                    log_settlement(state_upd, acc_settle1, acc_settle2, &posted_node.owner(), false, tokens_part)?;
+                    log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &posted_node.owner(), false, tokens_part)?;
                     state_upd.active_ask = state_upd.active_ask.checked_sub(1).ok_or(error!(ErrorCode::Overflow))?;
                     state_upd.last_price = posted_price;
                 } else if posted_qty > tokens_to_fill {   // Match part of the order
@@ -993,7 +1007,7 @@ pub mod aqua_dex {
                     });
                     let new_amount = posted_qty.checked_sub(tokens_to_fill).ok_or(error!(ErrorCode::Overflow))?;
                     ob.index_mut::<Order>(OrderDT::AskOrder as u16, posted_node.slot() as usize).set_amount(new_amount);
-                    log_settlement(state_upd, acc_settle1, acc_settle2, &posted_node.owner(), false, tokens_part)?;
+                    log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &posted_node.owner(), false, tokens_part)?;
                     state_upd.last_price = posted_price;
                     break;
                 }
@@ -1032,7 +1046,7 @@ pub mod aqua_dex {
                     price: Order::price(expire_leaf.key()),
                     quantity: expire_amount,
                 });
-                log_settlement(state_upd, acc_settle1, acc_settle2, &expire_leaf.owner(), true, expire_amount)?; // No multiply for Ask order
+                log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &expire_leaf.owner(), true, expire_amount)?; // No multiply for Ask order
                 map_remove(ob, DT::AskOrder, expire_leaf.key())?;
                 Order::free_index(ob, DT::AskOrder, expire_leaf.slot())?;
                 state_upd.active_ask = state_upd.active_ask.checked_sub(1).ok_or(error!(ErrorCode::Overflow))?;
@@ -1077,7 +1091,7 @@ pub mod aqua_dex {
                         Order::price(evict_node.key()).to_string(),
                     );
                     let evict_total = evict_amount.checked_mul(Order::price(evict_node.key())).ok_or(error!(ErrorCode::Overflow))?;
-                    log_settlement(state_upd, acc_settle1, acc_settle2, &evict_node.owner(), false, evict_total)?;
+                    log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &evict_node.owner(), false, evict_total)?;
                     map_remove(ob, DT::BidOrder, evict_node.key())?;
                     Order::free_index(ob, DT::BidOrder, evict_node.slot())?;
                     state_upd.active_bid = state_upd.active_bid.checked_sub(1).ok_or(error!(ErrorCode::Overflow))?;
@@ -1301,7 +1315,7 @@ pub mod aqua_dex {
                     });
                     map_remove(ob, DT::BidOrder, posted_node.key())?;
                     Order::free_index(ob, DT::BidOrder, posted_node.slot())?;
-                    log_settlement(state_upd, acc_settle1, acc_settle2, &posted_node.owner(), true, tokens_to_fill)?;
+                    log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &posted_node.owner(), true, tokens_to_fill)?;
                     state_upd.last_price = posted_price;
                     break;
                 } else if posted_qty < tokens_to_fill {   // Match the entire order and continue
@@ -1326,7 +1340,7 @@ pub mod aqua_dex {
                     });
                     map_remove(ob, DT::BidOrder, posted_node.key())?;
                     Order::free_index(ob, DT::BidOrder, posted_node.slot())?;
-                    log_settlement(state_upd, acc_settle1, acc_settle2, &posted_node.owner(), true, posted_qty)?;
+                    log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &posted_node.owner(), true, posted_qty)?;
                     state_upd.last_price = posted_price;
                 } else if posted_qty > tokens_to_fill {   // Match part of the order
                     tokens_filled = tokens_filled.checked_add(tokens_to_fill).ok_or(error!(ErrorCode::Overflow))?;
@@ -1349,7 +1363,7 @@ pub mod aqua_dex {
                     });
                     let new_amount = posted_qty.checked_sub(tokens_to_fill).ok_or(error!(ErrorCode::Overflow))?;
                     ob.index_mut::<Order>(OrderDT::BidOrder as u16, posted_node.slot() as usize).set_amount(new_amount);
-                    log_settlement(state_upd, acc_settle1, acc_settle2, &posted_node.owner(), true, tokens_to_fill)?;
+                    log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &posted_node.owner(), true, tokens_to_fill)?;
                     state_upd.last_price = posted_price;
                     break;
                 }
@@ -1390,7 +1404,7 @@ pub mod aqua_dex {
                     price: Order::price(expire_leaf.key()),
                     quantity: expire_amount,
                 });
-                log_settlement(state_upd, acc_settle1, acc_settle2, &expire_leaf.owner(), false, expire_total)?; // Total calculated
+                log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &expire_leaf.owner(), false, expire_total)?; // Total calculated
                 map_remove(ob, DT::BidOrder, expire_leaf.key())?;
                 Order::free_index(ob, DT::BidOrder, expire_leaf.slot())?;
                 state_upd.active_bid = state_upd.active_bid.checked_sub(1).ok_or(error!(ErrorCode::Overflow))?;
@@ -1435,7 +1449,7 @@ pub mod aqua_dex {
                         evict_order.amount().to_string(),
                         Order::price(evict_node.key()).to_string(),
                     );
-                    log_settlement(state_upd, acc_settle1, acc_settle2, &evict_node.owner(), true, evict_amount)?;
+                    log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &evict_node.owner(), true, evict_amount)?;
                     map_remove(ob, DT::AskOrder, evict_node.key())?;
                     Order::free_index(ob, DT::AskOrder, evict_node.slot())?;
                     state_upd.active_ask = state_upd.active_ask.checked_sub(1).ok_or(error!(ErrorCode::Overflow))?;
@@ -1636,7 +1650,7 @@ pub mod aqua_dex {
                     Order::free_index(ob, DT::AskOrder, posted_node.slot())?;
                     state_upd.prc_vault_balance = state_upd.prc_vault_balance.checked_add(tokens_part).ok_or(error!(ErrorCode::Overflow))?;
                     state_upd.prc_order_balance = state_upd.prc_order_balance.checked_add(tokens_part).ok_or(error!(ErrorCode::Overflow))?;
-                    log_settlement(state_upd, acc_settle1, acc_settle2, &posted_node.owner(), false, tokens_part)?;
+                    log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &posted_node.owner(), false, tokens_part)?;
                     state_upd.active_ask = state_upd.active_ask.checked_sub(1).ok_or(error!(ErrorCode::Overflow))?;
                     state_upd.last_price = posted_price;
                     break;
@@ -1664,7 +1678,7 @@ pub mod aqua_dex {
                     Order::free_index(ob, DT::AskOrder, posted_node.slot())?;
                     state_upd.prc_vault_balance = state_upd.prc_vault_balance.checked_add(tokens_part).ok_or(error!(ErrorCode::Overflow))?;
                     state_upd.prc_order_balance = state_upd.prc_order_balance.checked_add(tokens_part).ok_or(error!(ErrorCode::Overflow))?;
-                    log_settlement(state_upd, acc_settle1, acc_settle2, &posted_node.owner(), false, tokens_part)?;
+                    log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &posted_node.owner(), false, tokens_part)?;
                     state_upd.active_ask = state_upd.active_ask.checked_sub(1).ok_or(error!(ErrorCode::Overflow))?;
                     state_upd.last_price = posted_price;
                 } else if posted_qty > tokens_to_fill {   // Match part of the order
@@ -1690,7 +1704,7 @@ pub mod aqua_dex {
                     ob.index_mut::<Order>(OrderDT::AskOrder as u16, posted_node.slot() as usize).set_amount(new_amount);
                     state_upd.prc_vault_balance = state_upd.prc_vault_balance.checked_add(tokens_part).ok_or(error!(ErrorCode::Overflow))?;
                     state_upd.prc_order_balance = state_upd.prc_order_balance.checked_add(tokens_part).ok_or(error!(ErrorCode::Overflow))?;
-                    log_settlement(state_upd, acc_settle1, acc_settle2, &posted_node.owner(), false, tokens_part)?;
+                    log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &posted_node.owner(), false, tokens_part)?;
                     state_upd.last_price = posted_price;
                     break;
                 }
@@ -1719,7 +1733,7 @@ pub mod aqua_dex {
                     Order::free_index(ob, DT::AskOrder, posted_node.slot())?;
                     state_upd.prc_vault_balance = state_upd.prc_vault_balance.checked_add(posted_part).ok_or(error!(ErrorCode::Overflow))?;
                     state_upd.prc_order_balance = state_upd.prc_order_balance.checked_add(posted_part).ok_or(error!(ErrorCode::Overflow))?;
-                    log_settlement(state_upd, acc_settle1, acc_settle2, &posted_node.owner(), false, posted_part)?;
+                    log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &posted_node.owner(), false, posted_part)?;
                     state_upd.active_ask = state_upd.active_ask.checked_sub(1).ok_or(error!(ErrorCode::Overflow))?;
                     state_upd.last_price = posted_price;
                     break;
@@ -1746,7 +1760,7 @@ pub mod aqua_dex {
                     Order::free_index(ob, DT::AskOrder, posted_node.slot())?;
                     state_upd.prc_vault_balance = state_upd.prc_vault_balance.checked_add(posted_part).ok_or(error!(ErrorCode::Overflow))?;
                     state_upd.prc_order_balance = state_upd.prc_order_balance.checked_add(posted_part).ok_or(error!(ErrorCode::Overflow))?;
-                    log_settlement(state_upd, acc_settle1, acc_settle2, &posted_node.owner(), false, posted_part)?;
+                    log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &posted_node.owner(), false, posted_part)?;
                     state_upd.active_ask = state_upd.active_ask.checked_sub(1).ok_or(error!(ErrorCode::Overflow))?;
                     state_upd.last_price = posted_price;
                 } else if posted_part > price_to_fill {   // Match part of the order
@@ -1773,7 +1787,7 @@ pub mod aqua_dex {
                     ob.index_mut::<Order>(OrderDT::AskOrder as u16, posted_node.slot() as usize).set_amount(new_amount);
                     state_upd.prc_vault_balance = state_upd.prc_vault_balance.checked_add(price_to_fill).ok_or(error!(ErrorCode::Overflow))?;
                     state_upd.prc_order_balance = state_upd.prc_order_balance.checked_add(price_to_fill).ok_or(error!(ErrorCode::Overflow))?;
-                    log_settlement(state_upd, acc_settle1, acc_settle2, &posted_node.owner(), false, price_to_fill)?;
+                    log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &posted_node.owner(), false, price_to_fill)?;
                     state_upd.last_price = posted_price;
                     break;
                 }
@@ -1808,7 +1822,7 @@ pub mod aqua_dex {
                     price: Order::price(expire_leaf.key()),
                     quantity: expire_amount,
                 });
-                log_settlement(state_upd, acc_settle1, acc_settle2, &expire_leaf.owner(), true, expire_amount)?; // No multiply for Ask order
+                log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &expire_leaf.owner(), true, expire_amount)?; // No multiply for Ask order
                 map_remove(ob, DT::AskOrder, expire_leaf.key())?;
                 Order::free_index(ob, DT::AskOrder, expire_leaf.slot())?;
                 state_upd.active_ask = state_upd.active_ask.checked_sub(1).ok_or(error!(ErrorCode::Overflow))?;
@@ -2006,7 +2020,7 @@ pub mod aqua_dex {
                     Order::free_index(ob, DT::BidOrder, posted_node.slot())?;
                     state_upd.mkt_vault_balance = state_upd.mkt_vault_balance.checked_add(tokens_to_fill).ok_or(error!(ErrorCode::Overflow))?;
                     state_upd.mkt_order_balance = state_upd.mkt_order_balance.checked_add(tokens_to_fill).ok_or(error!(ErrorCode::Overflow))?;
-                    log_settlement(state_upd, acc_settle1, acc_settle2, &posted_node.owner(), true, tokens_to_fill)?;
+                    log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &posted_node.owner(), true, tokens_to_fill)?;
                     state_upd.active_bid = state_upd.active_bid.checked_sub(1).ok_or(error!(ErrorCode::Overflow))?;
                     state_upd.last_price = posted_price;
                     break;
@@ -2034,7 +2048,7 @@ pub mod aqua_dex {
                     Order::free_index(ob, DT::BidOrder, posted_node.slot())?;
                     state_upd.mkt_vault_balance = state_upd.mkt_vault_balance.checked_add(posted_qty).ok_or(error!(ErrorCode::Overflow))?;
                     state_upd.mkt_order_balance = state_upd.mkt_order_balance.checked_add(posted_qty).ok_or(error!(ErrorCode::Overflow))?;
-                    log_settlement(state_upd, acc_settle1, acc_settle2, &posted_node.owner(), true, posted_qty)?;
+                    log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &posted_node.owner(), true, posted_qty)?;
                     state_upd.active_bid = state_upd.active_bid.checked_sub(1).ok_or(error!(ErrorCode::Overflow))?;
                     state_upd.last_price = posted_price;
                 } else if posted_qty > tokens_to_fill {   // Match part of the order
@@ -2060,7 +2074,7 @@ pub mod aqua_dex {
                     ob.index_mut::<Order>(OrderDT::BidOrder as u16, posted_node.slot() as usize).set_amount(new_amount);
                     state_upd.mkt_vault_balance = state_upd.mkt_vault_balance.checked_add(tokens_to_fill).ok_or(error!(ErrorCode::Overflow))?;
                     state_upd.mkt_order_balance = state_upd.mkt_order_balance.checked_add(tokens_to_fill).ok_or(error!(ErrorCode::Overflow))?;
-                    log_settlement(state_upd, acc_settle1, acc_settle2, &posted_node.owner(), true, tokens_to_fill)?;
+                    log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &posted_node.owner(), true, tokens_to_fill)?;
                     state_upd.last_price = posted_price;
                     break;
                 }
@@ -2089,7 +2103,7 @@ pub mod aqua_dex {
                     Order::free_index(ob, DT::BidOrder, posted_node.slot())?;
                     state_upd.mkt_vault_balance = state_upd.mkt_vault_balance.checked_add(posted_qty).ok_or(error!(ErrorCode::Overflow))?;
                     state_upd.mkt_order_balance = state_upd.mkt_order_balance.checked_add(posted_qty).ok_or(error!(ErrorCode::Overflow))?;
-                    log_settlement(state_upd, acc_settle1, acc_settle2, &posted_node.owner(), true, posted_qty)?;
+                    log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &posted_node.owner(), true, posted_qty)?;
                     state_upd.active_bid = state_upd.active_bid.checked_sub(1).ok_or(error!(ErrorCode::Overflow))?;
                     state_upd.last_price = posted_price;
                     break;
@@ -2116,7 +2130,7 @@ pub mod aqua_dex {
                     Order::free_index(ob, DT::BidOrder, posted_node.slot())?;
                     state_upd.mkt_vault_balance = state_upd.mkt_vault_balance.checked_add(posted_qty).ok_or(error!(ErrorCode::Overflow))?;
                     state_upd.mkt_order_balance = state_upd.mkt_order_balance.checked_add(posted_qty).ok_or(error!(ErrorCode::Overflow))?;
-                    log_settlement(state_upd, acc_settle1, acc_settle2, &posted_node.owner(), true, posted_qty)?;
+                    log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &posted_node.owner(), true, posted_qty)?;
                     state_upd.active_bid = state_upd.active_bid.checked_sub(1).ok_or(error!(ErrorCode::Overflow))?;
                     state_upd.last_price = posted_price;
                 } else if posted_part > price_to_fill {   // Match part of the order
@@ -2142,7 +2156,7 @@ pub mod aqua_dex {
                     ob.index_mut::<Order>(OrderDT::BidOrder as u16, posted_node.slot() as usize).set_amount(new_amount);
                     state_upd.mkt_vault_balance = state_upd.mkt_vault_balance.checked_add(fill_amount).ok_or(error!(ErrorCode::Overflow))?;
                     state_upd.mkt_order_balance = state_upd.mkt_order_balance.checked_add(fill_amount).ok_or(error!(ErrorCode::Overflow))?;
-                    log_settlement(state_upd, acc_settle1, acc_settle2, &posted_node.owner(), true, fill_amount)?;
+                    log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &posted_node.owner(), true, fill_amount)?;
                     state_upd.last_price = posted_price;
                     break;
                 }
@@ -2180,7 +2194,7 @@ pub mod aqua_dex {
                     price: Order::price(expire_leaf.key()),
                     quantity: expire_amount,
                 });
-                log_settlement(state_upd, acc_settle1, acc_settle2, &expire_leaf.owner(), false, expire_total)?; // Total calculated
+                log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &expire_leaf.owner(), false, expire_total)?; // Total calculated
                 map_remove(ob, DT::BidOrder, expire_leaf.key())?;
                 Order::free_index(ob, DT::BidOrder, expire_leaf.slot())?;
                 state_upd.active_bid = state_upd.active_bid.checked_sub(1).ok_or(error!(ErrorCode::Overflow))?;
@@ -2467,9 +2481,9 @@ pub mod aqua_dex {
         Ok(())
     }
 
-    pub fn expire_order<'a, 'b, 'c, 'info>(ctx: Context<'a, 'b, 'c, 'info, Withdraw<'info>>) -> anchor_lang::Result<()> {
+    /*pub fn expire_order<'a, 'b, 'c, 'info>(ctx: Context<'a, 'b, 'c, 'info, Withdraw<'info>>) -> anchor_lang::Result<()> {
         Ok(())
-    }
+    }*/
 
     pub fn manager_cancel_order<'a, 'b, 'c, 'info>(ctx: Context<'a, 'b, 'c, 'info, ManagerCancelOrder<'info>>,
         inp_rollover: bool,
@@ -2542,13 +2556,13 @@ pub mod aqua_dex {
                 let mkt_decimal_factor: u64 = mkt_decimal_base.pow(market.mkt_decimals as u32);
                 let total = scale_price(order_qty, order_price, mkt_decimal_factor)?;
                 result.set_prc_tokens(total);
-                log_settlement(state, acc_settle1, acc_settle2, &order_owner, false, total)?;
+                log_settlement(&market.key(), state, acc_settle1, acc_settle2, &order_owner, false, total)?;
                 total
             },
             Side::Ask => {
                 let total = order.amount();
                 result.set_mkt_tokens(total);
-                log_settlement(state, acc_settle1, acc_settle2, &order_owner, true, total)?;
+                log_settlement(&market.key(), state, acc_settle1, acc_settle2, &order_owner, true, total)?;
                 total
             }
         };
@@ -2611,44 +2625,44 @@ pub mod aqua_dex {
         Ok(())
     }
 
-    pub fn manager_withdraw<'a, 'b, 'c, 'info>(ctx: Context<'a, 'b, 'c, 'info, Withdraw<'info>>) -> anchor_lang::Result<()> {
+    /*pub fn manager_withdraw<'a, 'b, 'c, 'info>(ctx: Context<'a, 'b, 'c, 'info, Withdraw<'info>>) -> anchor_lang::Result<()> {
         Ok(())
-    }
+    }*/
 
-    pub fn manager_withdraw_fees<'a, 'b, 'c, 'info>(ctx: Context<'a, 'b, 'c, 'info, Withdraw<'info>>) -> anchor_lang::Result<()> {
+    /*pub fn manager_withdraw_fees<'a, 'b, 'c, 'info>(ctx: Context<'a, 'b, 'c, 'info, Withdraw<'info>>) -> anchor_lang::Result<()> {
         Ok(())
-    }
+    }*/
 
     /*pub fn manager_update_market<'a, 'b, 'c, 'info>(ctx: Context<'a, 'b, 'c, 'info, Withdraw<'info>>) -> anchor_lang::Result<()> {
         Ok(())
     }*/
 
-    pub fn manager_consolidate<'a, 'b, 'c, 'info>(ctx: Context<'a, 'b, 'c, 'info, Withdraw<'info>>) -> anchor_lang::Result<()> {
+    /*pub fn manager_consolidate<'a, 'b, 'c, 'info>(ctx: Context<'a, 'b, 'c, 'info, Withdraw<'info>>) -> anchor_lang::Result<()> {
         Ok(())
-    }
+    }*/
 
-    pub fn manager_vault_create<'a, 'b, 'c, 'info>(ctx: Context<'a, 'b, 'c, 'info, Withdraw<'info>>) -> anchor_lang::Result<()> {
+    /*pub fn manager_vault_create<'a, 'b, 'c, 'info>(ctx: Context<'a, 'b, 'c, 'info, Withdraw<'info>>) -> anchor_lang::Result<()> {
         Ok(())
-    }
+    }*/
 
     // Move tokens from the settlement log to a user's individual vault
-    pub fn manager_vault_deposit<'a, 'b, 'c, 'info>(ctx: Context<'a, 'b, 'c, 'info, Withdraw<'info>>) -> anchor_lang::Result<()> {
+    /*pub fn manager_vault_deposit<'a, 'b, 'c, 'info>(ctx: Context<'a, 'b, 'c, 'info, Withdraw<'info>>) -> anchor_lang::Result<()> {
+        Ok(())
+    }*/
+
+    /*pub fn manager_vault_withdraw<'a, 'b, 'c, 'info>(ctx: Context<'a, 'b, 'c, 'info, Withdraw<'info>>) -> anchor_lang::Result<()> {
+        Ok(())
+    }*/
+
+    /*pub fn vault_withdraw<'a, 'b, 'c, 'info>(ctx: Context<'a, 'b, 'c, 'info, Withdraw<'info>>) -> anchor_lang::Result<()> {
+        Ok(())
+    }*/
+
+    pub fn close_trade_result(_ctx: Context<CloseTradeResult>) -> anchor_lang::Result<()> {
         Ok(())
     }
 
-    pub fn manager_vault_withdraw<'a, 'b, 'c, 'info>(ctx: Context<'a, 'b, 'c, 'info, Withdraw<'info>>) -> anchor_lang::Result<()> {
-        Ok(())
-    }
-
-    pub fn vault_withdraw<'a, 'b, 'c, 'info>(ctx: Context<'a, 'b, 'c, 'info, Withdraw<'info>>) -> anchor_lang::Result<()> {
-        Ok(())
-    }
-
-    pub fn close_trade_result(ctx: Context<CloseTradeResult>) -> anchor_lang::Result<()> {
-        Ok(())
-    }
-
-    pub fn close_withdraw_result(ctx: Context<CloseWithdrawResult>) -> anchor_lang::Result<()> {
+    pub fn close_withdraw_result(_ctx: Context<CloseWithdrawResult>) -> anchor_lang::Result<()> {
         Ok(())
     }
 }
@@ -2656,50 +2670,50 @@ pub mod aqua_dex {
 #[derive(Accounts)]
 #[instruction(inp_agent_nonce: u8)]
 pub struct CreateMarket<'info> {
-    /// CHECK: ignore warning
+    /// CHECK: ignore
     #[account(zero)]
     pub market: AccountInfo<'info>, 
-    /// CHECK: ignore warning
+    /// CHECK: ignore
     #[account(zero)]
     pub state: AccountInfo<'info>,
-    /// CHECK: ignore warning
+    /// CHECK: ignore
     #[account(seeds = [market.key().as_ref()], bump = inp_agent_nonce)]
     pub agent: AccountInfo<'info>,
     #[account(mut)]
     pub manager: Signer<'info>,
-    /// CHECK: ignore warning
+    /// CHECK: ignore
     pub mkt_mint: AccountInfo<'info>,
-    /// CHECK: ignore warning
+    /// CHECK: ignore
     #[account(mut)]
     pub mkt_vault: AccountInfo<'info>,
-    /// CHECK: ignore warning
+    /// CHECK: ignore
     pub prc_mint: AccountInfo<'info>,
-    /// CHECK: ignore warning
+    /// CHECK: ignore
     #[account(mut)]
     pub prc_vault: AccountInfo<'info>,
-    /// CHECK: ignore warning
+    /// CHECK: ignore
     #[account(mut)]
     pub orders: AccountInfo<'info>,
-    /// CHECK: ignore warning
+    /// CHECK: ignore
     #[account(zero)]
     pub settle_a: AccountInfo<'info>,
-    /// CHECK: ignore warning
+    /// CHECK: ignore
     #[account(zero)]
     pub settle_b: AccountInfo<'info>,
-    /// CHECK: ignore warning
+    /// CHECK: ignore
     #[account(address = token::ID)]
     pub spl_token_prog: AccountInfo<'info>,
-    /// CHECK: ignore warning
+    /// CHECK: ignore
     #[account(address = associated_token::ID)]
-    /// CHECK: ignore warning
+    /// CHECK: ignore
     pub asc_token_prog: AccountInfo<'info>,
-    /// CHECK: ignore warning
+    /// CHECK: ignore
     #[account(address = security_token::ID)]
     pub ast_token_prog: AccountInfo<'info>,
-    /// CHECK: ignore warning
+    /// CHECK: ignore
     #[account(address = system_program::ID)]
     pub sys_prog: AccountInfo<'info>,
-    /// CHECK: ignore warning
+    /// CHECK: ignore
     #[account(address = sysvar::rent::ID)]
     pub sys_rent: AccountInfo<'info>,
 }
@@ -2709,39 +2723,39 @@ pub struct OrderContext<'info> {
     pub market: Account<'info, Market>,
     #[account(mut)]
     pub state: Account<'info, MarketState>,
-    /// CHECK: ignore warning
+    /// CHECK: ignore
     pub agent: AccountInfo<'info>,
-    /// CHECK: ignore warning
+    /// CHECK: ignore
     #[account(mut, signer)]
     pub user: AccountInfo<'info>,
-    /// CHECK: ignore warning
+    /// CHECK: ignore
     #[account(mut)]
     pub user_mkt_token: AccountInfo<'info>, // Deposit market tokens for "Ask" orders
-    /// CHECK: ignore warning
+    /// CHECK: ignore
     #[account(mut)]
     pub user_prc_token: AccountInfo<'info>, // Withdraw pricing tokens if the order is filled or partially filled
-    /// CHECK: ignore warning
+    /// CHECK: ignore
     #[account(mut)]
     pub mkt_vault: AccountInfo<'info>,
-    /// CHECK: ignore warning
+    /// CHECK: ignore
     #[account(mut)]
     pub prc_vault: AccountInfo<'info>,
-    /// CHECK: ignore warning
+    /// CHECK: ignore
     #[account(mut)]
     pub orders: AccountInfo<'info>,
-    /// CHECK: ignore warning
+    /// CHECK: ignore
     #[account(mut)]
     pub settle_a: AccountInfo<'info>,
-    /// CHECK: ignore warning
+    /// CHECK: ignore
     #[account(mut)]
     pub settle_b: AccountInfo<'info>,
-    /// CHECK: ignore warning
+    /// CHECK: ignore
     #[account(mut, signer)]
     pub result: AccountInfo<'info>,
-    /// CHECK: ignore warning
+    /// CHECK: ignore
     #[account(address = token::ID)]
     pub spl_token_prog: AccountInfo<'info>,
-    /// CHECK: ignore warning
+    /// CHECK: ignore
     #[account(address = security_token::ID)]
     pub ast_token_prog: AccountInfo<'info>,
 }
@@ -2751,33 +2765,33 @@ pub struct CancelOrder<'info> {
     pub market: Account<'info, Market>,
     #[account(mut)]
     pub state: Account<'info, MarketState>,
-    /// CHECK: ignore warning
+    /// CHECK: ignore
     pub agent: AccountInfo<'info>,
-    /// CHECK: ignore warning
+    /// CHECK: ignore
     #[account(mut, signer)]
     pub user: AccountInfo<'info>,
-    /// CHECK: ignore warning
+    /// CHECK: ignore
     #[account(mut)]
     pub user_mkt_token: AccountInfo<'info>,
-    /// CHECK: ignore warning
+    /// CHECK: ignore
     #[account(mut)]
     pub user_prc_token: AccountInfo<'info>,
-    /// CHECK: ignore warning
+    /// CHECK: ignore
     #[account(mut)]
     pub mkt_vault: AccountInfo<'info>,
-    /// CHECK: ignore warning
+    /// CHECK: ignore
     #[account(mut)]
     pub prc_vault: AccountInfo<'info>,
-    /// CHECK: ignore warning
+    /// CHECK: ignore
     #[account(mut)]
     pub orders: AccountInfo<'info>,
-    /// CHECK: ignore warning
+    /// CHECK: ignore
     #[account(mut, signer)]
     pub result: AccountInfo<'info>,
-    /// CHECK: ignore warning
+    /// CHECK: ignore
     #[account(address = token::ID)]
     pub spl_token_prog: AccountInfo<'info>,
-    /// CHECK: ignore warning
+    /// CHECK: ignore
     #[account(address = security_token::ID)]
     pub ast_token_prog: AccountInfo<'info>,
 }
@@ -2787,19 +2801,19 @@ pub struct ManagerCancelOrder<'info> {
     pub market: Account<'info, Market>,
     #[account(mut)]
     pub state: Account<'info, MarketState>,
-    /// CHECK: ignore warning
+    /// CHECK: ignore
     #[account(mut, signer)]
     pub manager: AccountInfo<'info>,
-    /// CHECK: ignore warning
+    /// CHECK: ignore
     #[account(mut)]
     pub orders: AccountInfo<'info>,
-    /// CHECK: ignore warning
+    /// CHECK: ignore
     #[account(mut, signer)]
     pub result: AccountInfo<'info>,
-    /// CHECK: ignore warning
+    /// CHECK: ignore
     #[account(mut)]
     pub settle_a: AccountInfo<'info>,
-    /// CHECK: ignore warning
+    /// CHECK: ignore
     #[account(mut)]
     pub settle_b: AccountInfo<'info>,
 }
@@ -2809,53 +2823,53 @@ pub struct Withdraw<'info> {
     pub market: Account<'info, Market>,
     #[account(mut)]
     pub state: Account<'info, MarketState>,
-    /// CHECK: ignore warning
+    /// CHECK: ignore
     pub agent: AccountInfo<'info>,
-    /// CHECK: ignore warning
+    /// CHECK: ignore
     #[account(mut, signer)]
     pub user: AccountInfo<'info>,
-    /// CHECK: ignore warning
+    /// CHECK: ignore
     #[account(mut)]
     pub user_mkt_token: AccountInfo<'info>,
-    /// CHECK: ignore warning
+    /// CHECK: ignore
     #[account(mut)]
     pub user_prc_token: AccountInfo<'info>,
-    /// CHECK: ignore warning
+    /// CHECK: ignore
     #[account(mut)]
     pub mkt_vault: AccountInfo<'info>,
-    /// CHECK: ignore warning
+    /// CHECK: ignore
     #[account(mut)]
     pub prc_vault: AccountInfo<'info>,
-    /// CHECK: ignore warning
+    /// CHECK: ignore
     #[account(mut)]
     pub settle: AccountInfo<'info>,
-    /// CHECK: ignore warning
+    /// CHECK: ignore
     #[account(mut, signer)]
     pub result: AccountInfo<'info>,
-    /// CHECK: ignore warning
+    /// CHECK: ignore
     #[account(address = token::ID)]
     pub spl_token_prog: AccountInfo<'info>,
-    /// CHECK: ignore warning
+    /// CHECK: ignore
     #[account(address = security_token::ID)]
     pub ast_token_prog: AccountInfo<'info>,
 }
 
 #[derive(Accounts)]
 pub struct CloseTradeResult<'info> {
-    /// CHECK: ignore warning
-    #[account(mut, signer)]
+    /// CHECK: ignore
+    #[account(mut)]
     pub fee_receiver: AccountInfo<'info>,
-    /// CHECK: ignore warning
+    /// CHECK: ignore
     #[account(mut, signer, close = fee_receiver)]
     pub result: Account<'info, TradeResult>,
 }
 
 #[derive(Accounts)]
 pub struct CloseWithdrawResult<'info> {
-    /// CHECK: ignore warning
-    #[account(mut, signer)]
+    /// CHECK: ignore
+    #[account(mut)]
     pub fee_receiver: AccountInfo<'info>,
-    /// CHECK: ignore warning
+    /// CHECK: ignore
     #[account(mut, signer, close = fee_receiver)]
     pub result: Account<'info, WithdrawResult>,
 }
@@ -2865,17 +2879,17 @@ pub struct ExtendLog<'info> {
     pub market: Account<'info, Market>,
     #[account(mut)]
     pub state: Account<'info, MarketState>,
-    /// CHECK: ignore warning
+    /// CHECK: ignore
     #[account(mut, signer)]
     pub user: AccountInfo<'info>,
-    /// CHECK: ignore warning
+    /// CHECK: ignore
     #[account(mut)]
     pub settle: AccountInfo<'info>,
 }
 
 #[derive(Accounts)]
 pub struct Version<'info> {
-    /// CHECK: ignore warning
+    /// CHECK: ignore
     #[account(mut)]
     pub result: AccountInfo<'info>,
 }
@@ -3041,6 +3055,17 @@ pub struct WithdrawEvent {
     pub market_token: Pubkey,
     pub pricing_token: Pubkey,
     pub manager: bool,
+    pub market_tokens: u64,
+    pub pricing_tokens: u64,
+}
+
+#[event]
+pub struct SettleEvent {
+    pub event_type: u128,
+    pub action_id: u64,
+    pub market: Pubkey,
+    pub owner: Pubkey,
+    pub settlement_log: Pubkey,
     pub market_tokens: u64,
     pub pricing_tokens: u64,
 }
