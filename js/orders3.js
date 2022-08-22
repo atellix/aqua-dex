@@ -69,12 +69,13 @@ function decodeOrderId(orderId) {
     return new anchor.BN(bgn.toString())
 }
 
-function formatOrder(order) {
+function formatOrder(order, price) {
     var res = {
         tokensSent: order.tokensSent.toString(),
         tokensReceived: order.tokensReceived.toString(),
-        tokensPosted: order.tokensPosted.toString(),
         tokensFee: order.tokensFee.toString(),
+        postedQuantity: order.postedQuantity.toString(),
+        orderPrice: price.toString(),
         orderId: encodeOrderId(order.orderId),
     }
     return res
@@ -112,7 +113,7 @@ async function main() {
     const tokenMint1 = new PublicKey(mktData.tokenMint1) // Market token
     const tokenMint2 = new PublicKey(mktData.tokenMint2) // Pricing token
 
-    var accountId1 = '6d6d4028-ed3f-4ea3-af7b-9c96a4411eee' // Vault
+    var accountId1 = 'b87a2001-9ca4-435f-b3d0-43a8e607f1b9' // Vault
     var accountId2 = '0d29574d-5707-4291-b0bf-d0f69b172dc9' // User Account
     var accountBuf1 = Buffer.from(uuidparse(accountId1).reverse())
     var accountBuf2 = Buffer.from(uuidparse(accountId2).reverse())
@@ -189,7 +190,7 @@ async function main() {
                     astTokenProg: securityTokenPK,
                 },
                 remainingAccounts: [
-                    { pubkey: new PublicKey('HnsDLQ4VHV4JDRbPSTHfsSubWo8DRpz6atKsFhhDNgYu'), isWritable: false, isSigner: false }, // From: Market auth
+                    { pubkey: new PublicKey('D3GCG2hV59N5mFkMNfMTMACfs2BLHyEEbRdtmBgah9nA'), isWritable: false, isSigner: false }, // From: Market auth
                     { pubkey: new PublicKey('3uGbEYywK2Lz1dPJtzXmEyDbTiDUoKcGqBAsEs5cpxgY'), isWritable: false, isSigner: false }, // To: User auth
                 ],
                 signers: [resultData1],
@@ -197,7 +198,7 @@ async function main() {
         ))
         var res = await aquadex.account.tradeResult.fetch(resultData1.publicKey)
         order1 = res.orderId
-        console.log(formatOrder(res))
+        console.log(formatOrder(res, new anchor.BN(2.5 * 1000000)))
     }
 
     if (true) {
@@ -228,12 +229,12 @@ async function main() {
                 signers: [resultData1],
                 remainingAccounts: [
                     { pubkey: new PublicKey('3uGbEYywK2Lz1dPJtzXmEyDbTiDUoKcGqBAsEs5cpxgY'), isWritable: false, isSigner: false }, // From: User auth
-                    { pubkey: new PublicKey('HnsDLQ4VHV4JDRbPSTHfsSubWo8DRpz6atKsFhhDNgYu'), isWritable: false, isSigner: false }, // To: Market auth
+                    { pubkey: new PublicKey('D3GCG2hV59N5mFkMNfMTMACfs2BLHyEEbRdtmBgah9nA'), isWritable: false, isSigner: false }, // To: Market auth
                 ],
             }
         ))
         res = await aquadex.account.tradeResult.fetch(resultData1.publicKey)
-        console.log(formatOrder(res))
+        console.log(formatOrder(res, new anchor.BN(42 * 1000000)))
     }
 }
 
