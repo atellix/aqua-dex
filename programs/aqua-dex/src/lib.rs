@@ -132,6 +132,7 @@ pub struct AccountsHeader {
     pub market: Pubkey,     // Market address
     pub prev: Pubkey,       // Prev settlement accounts file
     pub next: Pubkey,       // Next settlement accounts file
+    pub items: u32,         // Number of items in the log
 }
 unsafe impl Zeroable for AccountsHeader {}
 unsafe impl Pod for AccountsHeader {}
@@ -345,14 +346,15 @@ fn verify_matching_accounts(left: &Pubkey, right: &Pubkey, error_msg: Option<Str
 fn settle_account(settle: &AccountInfo, owner_id: u128, owner: &Pubkey, mkt_token: bool, amount: u64) -> FnResult<u64, Error> {
     let new_balance: u64;
     let log_data: &mut[u8] = &mut settle.try_borrow_mut_data()?;
-    let (_header, page_table) = mut_array_refs![log_data, size_of::<AccountsHeader>(); .. ;];
+    let (header, page_table) = mut_array_refs![log_data, size_of::<AccountsHeader>(); .. ;];
+    let settle_header: &mut [AccountsHeader] = cast_slice_mut(header);
     let sl = SlabPageAlloc::new(page_table);
     let has_item = map_get(sl, DT::Account, owner_id);
     if has_item.is_none() {
         new_balance = amount;
         let new_item = map_insert(sl, DT::Account, &LeafNode::new(owner_id, 0, owner));
         if new_item.is_ok() {
-            // Delay setting the slot parameter so that AccountEntry SlabVec index is not updated unless a key is actually to the CritMap
+            // Delay setting the slot parameter so that AccountEntry SlabVec index is not updated unless a key is actually added to the CritMap
             let acct_idx = AccountEntry::next_index(sl, DT::Account)?;
             let mut cm = CritMap { slab: sl, type_id: map_datatype(DT::Account), capacity: map_len(DT::Account) };
             cm.get_key_mut(owner_id).unwrap().set_slot(acct_idx);
@@ -368,6 +370,7 @@ fn settle_account(settle: &AccountInfo, owner_id: u128, owner: &Pubkey, mkt_toke
                 prc_token_balance: prc_bal,
             };
             *sl.index_mut::<AccountEntry>(SettleDT::Account.into(), acct_idx as usize) = acct;
+            settle_header[0].items = settle_header[0].items.checked_add(1).ok_or(error!(ErrorCode::Overflow))?;
         } else {
             return Err(error!(ErrorCode::SettlementLogFull));
         }
@@ -479,6 +482,7 @@ fn log_rollover(
         market: market_key,
         prev: *settle_b.key,
         next: Pubkey::default(),
+        items: 0,
     };
     let settle_slab = SlabPageAlloc::new(settle_pages);
     settle_slab.setup_page_table();
@@ -715,6 +719,9 @@ pub mod aqua_dex {
                 msg!("Create associated token failed for pricing token");
                 return Err(ErrorCode::ExternalError.into());
             }
+        } else if mkt_mint_type == MintType::AtxSecurityToken && prc_mint_type == MintType::AtxSecurityToken {
+            msg!("SPL mint required");
+            return Err(ErrorCode::InvalidParameters.into());
         } else if prc_mint_type == MintType::AtxSecurityToken {
             let seeds = &[acc_market.key.as_ref(), &[inp_agent_nonce]];
             let signer = &[&seeds[..]];
@@ -799,6 +806,7 @@ pub mod aqua_dex {
             market: *acc_market.key,
             prev: Pubkey::default(),
             next: *acc_settle2.key,
+            items: 0,
         };
         let settle1_slab = SlabPageAlloc::new(settle1_pages);
         settle1_slab.setup_page_table();
@@ -812,6 +820,7 @@ pub mod aqua_dex {
             market: *acc_market.key,
             prev: *acc_settle2.key,
             next: Pubkey::default(),
+            items: 0,
         };
         let settle2_slab = SlabPageAlloc::new(settle2_pages);
         settle2_slab.setup_page_table();
@@ -830,7 +839,7 @@ pub mod aqua_dex {
         inp_quantity: u64,
         inp_price: u64,
         inp_post: bool,     // Post the order order to the orderbook, otherwise it must be filled immediately
-        inp_fill: bool,     // Require orders that are not posted to be filled completely (ignored for posted orders)
+        inp_fill: bool,     // Require orders that are not posted to be filled completely (okd for posted orders)
         inp_expires: i64,   // Unix timestamp for order expiration (must be in the future, must exceed minimum duration)
     ) -> anchor_lang::Result<()> {
         let clock = Clock::get()?;
@@ -1544,7 +1553,7 @@ pub mod aqua_dex {
         inp_by_quantity: bool,  // Fill by quantity (otherwise price)
         inp_quantity: u64,      // Fill until quantity
         inp_net_price: u64,     // Fill until net price is reached
-        inp_fill: bool,         // Require orders that are not posted to be filled completely (ignored for posted orders)
+        inp_fill: bool,         // Require orders that are not posted to be filled completely (okd for posted orders)
     ) -> anchor_lang::Result<()> {
         let clock = Clock::get()?;
         let clock_ts = clock.unix_timestamp;
@@ -2393,6 +2402,7 @@ pub mod aqua_dex {
         Ok(())
     }
 
+    // Withdraw tokens from the settlement vault
     pub fn withdraw<'a, 'b, 'c, 'info>(ctx: Context<'a, 'b, 'c, 'info, Withdraw<'info>>) -> anchor_lang::Result<()> {
         let market = &ctx.accounts.market;
         let state = &mut ctx.accounts.state;
@@ -2455,6 +2465,7 @@ pub mod aqua_dex {
                     .ok_or(error!(ErrorCode::Overflow))?;
             }
             // Remove log entry
+            settle_header[0].items = settle_header[0].items.checked_sub(1).ok_or(error!(ErrorCode::Overflow))?;
             map_remove(sl, DT::Account, log_node.key())?;
             AccountEntry::free_index(sl, DT::Account, log_node.slot())?;
             // Write result
@@ -2625,9 +2636,100 @@ pub mod aqua_dex {
         Ok(())
     }
 
-    /*pub fn manager_withdraw<'a, 'b, 'c, 'info>(ctx: Context<'a, 'b, 'c, 'info, Withdraw<'info>>) -> anchor_lang::Result<()> {
+    // Withdraw tokens from the settlement vault (manager)
+    pub fn manager_withdraw<'a, 'b, 'c, 'info>(ctx: Context<'a, 'b, 'c, 'info, ManagerWithdraw<'info>>) -> anchor_lang::Result<()> {
+        let market = &ctx.accounts.market;
+        let state = &mut ctx.accounts.state;
+        let acc_agent = &ctx.accounts.agent.to_account_info();
+        let acc_manager = &ctx.accounts.manager.to_account_info();
+        let acc_user = &ctx.accounts.user.to_account_info();
+        let acc_mkt_vault = &ctx.accounts.mkt_vault.to_account_info();
+        let acc_prc_vault = &ctx.accounts.prc_vault.to_account_info();
+        let acc_settle = &ctx.accounts.settle.to_account_info();
+        let acc_result = &ctx.accounts.result.to_account_info();
+
+        // Verify 
+        if market.manager != *acc_manager.key {
+            msg!("Not manager");
+            return Err(ErrorCode::AccessDenied.into());
+        }
+        verify_matching_accounts(&market.state, &state.key(), Some(String::from("Invalid market state")))?;
+        verify_matching_accounts(&market.agent, &acc_agent.key, Some(String::from("Invalid market agent")))?;
+        verify_matching_accounts(&market.mkt_vault, &acc_mkt_vault.key, Some(String::from("Invalid market token vault")))?;
+        verify_matching_accounts(&market.prc_vault, &acc_prc_vault.key, Some(String::from("Invalid pricing token vault")))?;
+
+        state.action_counter = state.action_counter.checked_add(1).ok_or(error!(ErrorCode::Overflow))?;
+
+        let mut market_tokens: u64 = 0;
+        let mut pricing_tokens: u64 = 0;
+        let owner_id: u128 = CritMap::bytes_hash(acc_user.key.as_ref());
+        let log_data: &mut[u8] = &mut acc_settle.try_borrow_mut_data()?;
+        let (header, page_table) = mut_array_refs![log_data, size_of::<AccountsHeader>(); .. ;];
+        let settle_header: &mut [AccountsHeader] = cast_slice_mut(header);
+        verify_matching_accounts(&settle_header[0].market, &market.key(), Some(String::from("Invalid market")))?;
+        let sl = SlabPageAlloc::new(page_table);
+        let has_item = map_get(sl, DT::Account, owner_id);
+        if has_item.is_some() {
+            let log_node = has_item.unwrap();
+            let log_entry = sl.index::<AccountEntry>(SettleDT::Account as u16, log_node.slot() as usize);
+            let seeds = &[ctx.accounts.market.to_account_info().key.as_ref(), &[market.agent_nonce]];
+            let signer = &[&seeds[..]];
+            let mut result = WithdrawResult { mkt_tokens: 0, prc_tokens: 0 };
+            if log_entry.mkt_token_balance() > 0 {
+                market_tokens = log_entry.mkt_token_balance();
+                result.set_mkt_tokens(market_tokens);
+                let mint_type = MintType::try_from(market.mkt_mint_type).map_err(|_| ErrorCode::InvalidParameters)?;
+                perform_signed_transfer(ctx.remaining_accounts, signer, mint_type, 0, log_entry.mkt_token_balance(),
+                    &ctx.accounts.mkt_vault.to_account_info(),          // From
+                    &ctx.accounts.user_mkt_token.to_account_info(),     // To
+                    &ctx.accounts.agent.to_account_info(),              // Auth
+                    &ctx.accounts.spl_token_prog.to_account_info(),     // SPL Token Program
+                    &ctx.accounts.ast_token_prog.to_account_info(),     // AST Token Program
+                )?;
+                state.mkt_vault_balance = state.mkt_vault_balance.checked_sub(market_tokens)
+                    .ok_or(error!(ErrorCode::Overflow))?;
+            }
+            if log_entry.prc_token_balance() > 0 {
+                pricing_tokens = log_entry.prc_token_balance();
+                result.set_prc_tokens(pricing_tokens);
+                let mint_type = MintType::try_from(market.prc_mint_type).map_err(|_| ErrorCode::InvalidParameters)?;
+                perform_signed_transfer(ctx.remaining_accounts, signer, mint_type, 0, log_entry.prc_token_balance(),
+                    &ctx.accounts.prc_vault.to_account_info(),          // From
+                    &ctx.accounts.user_prc_token.to_account_info(),     // To
+                    &ctx.accounts.agent.to_account_info(),              // Auth
+                    &ctx.accounts.spl_token_prog.to_account_info(),     // SPL Token Program
+                    &ctx.accounts.ast_token_prog.to_account_info(),     // AST Token Program
+                )?;
+                state.prc_vault_balance = state.prc_vault_balance.checked_sub(pricing_tokens)
+                    .ok_or(error!(ErrorCode::Overflow))?;
+            }
+            // Remove log entry
+            settle_header[0].items = settle_header[0].items.checked_sub(1).ok_or(error!(ErrorCode::Overflow))?;
+            map_remove(sl, DT::Account, log_node.key())?;
+            AccountEntry::free_index(sl, DT::Account, log_node.slot())?;
+            // Write result
+            store_struct::<WithdrawResult>(&result, acc_result)?;
+        } else {
+            msg!("Account not found");
+            return Err(ErrorCode::AccountNotFound.into());
+        }
+
+        msg!("atellix-log");
+        emit!(WithdrawEvent {
+            event_type: 0,
+            action_id: state.action_counter,
+            market: ctx.accounts.market.key(),
+            owner: ctx.accounts.user.key(),
+            user: ctx.accounts.manager.key(),
+            market_token: ctx.accounts.user_mkt_token.key(),
+            pricing_token: ctx.accounts.user_prc_token.key(),
+            manager: true,
+            market_tokens: market_tokens,
+            pricing_tokens: pricing_tokens,
+        });
+
         Ok(())
-    }*/
+    }
 
     /*pub fn manager_withdraw_fees<'a, 'b, 'c, 'info>(ctx: Context<'a, 'b, 'c, 'info, Withdraw<'info>>) -> anchor_lang::Result<()> {
         Ok(())
@@ -2670,50 +2772,50 @@ pub mod aqua_dex {
 #[derive(Accounts)]
 #[instruction(inp_agent_nonce: u8)]
 pub struct CreateMarket<'info> {
-    /// CHECK: ignore
+    /// CHECK: ok
     #[account(zero)]
     pub market: AccountInfo<'info>, 
-    /// CHECK: ignore
+    /// CHECK: ok
     #[account(zero)]
     pub state: AccountInfo<'info>,
-    /// CHECK: ignore
+    /// CHECK: ok
     #[account(seeds = [market.key().as_ref()], bump = inp_agent_nonce)]
     pub agent: AccountInfo<'info>,
     #[account(mut)]
     pub manager: Signer<'info>,
-    /// CHECK: ignore
+    /// CHECK: ok
     pub mkt_mint: AccountInfo<'info>,
-    /// CHECK: ignore
+    /// CHECK: ok
     #[account(mut)]
     pub mkt_vault: AccountInfo<'info>,
-    /// CHECK: ignore
+    /// CHECK: ok
     pub prc_mint: AccountInfo<'info>,
-    /// CHECK: ignore
+    /// CHECK: ok
     #[account(mut)]
     pub prc_vault: AccountInfo<'info>,
-    /// CHECK: ignore
+    /// CHECK: ok
     #[account(mut)]
     pub orders: AccountInfo<'info>,
-    /// CHECK: ignore
+    /// CHECK: ok
     #[account(zero)]
     pub settle_a: AccountInfo<'info>,
-    /// CHECK: ignore
+    /// CHECK: ok
     #[account(zero)]
     pub settle_b: AccountInfo<'info>,
-    /// CHECK: ignore
+    /// CHECK: ok
     #[account(address = token::ID)]
     pub spl_token_prog: AccountInfo<'info>,
-    /// CHECK: ignore
+    /// CHECK: ok
     #[account(address = associated_token::ID)]
-    /// CHECK: ignore
+    /// CHECK: ok
     pub asc_token_prog: AccountInfo<'info>,
-    /// CHECK: ignore
+    /// CHECK: ok
     #[account(address = security_token::ID)]
     pub ast_token_prog: AccountInfo<'info>,
-    /// CHECK: ignore
+    /// CHECK: ok
     #[account(address = system_program::ID)]
     pub sys_prog: AccountInfo<'info>,
-    /// CHECK: ignore
+    /// CHECK: ok
     #[account(address = sysvar::rent::ID)]
     pub sys_rent: AccountInfo<'info>,
 }
@@ -2723,39 +2825,39 @@ pub struct OrderContext<'info> {
     pub market: Account<'info, Market>,
     #[account(mut)]
     pub state: Account<'info, MarketState>,
-    /// CHECK: ignore
+    /// CHECK: ok
     pub agent: AccountInfo<'info>,
-    /// CHECK: ignore
+    /// CHECK: ok
     #[account(mut, signer)]
     pub user: AccountInfo<'info>,
-    /// CHECK: ignore
+    /// CHECK: ok
     #[account(mut)]
     pub user_mkt_token: AccountInfo<'info>, // Deposit market tokens for "Ask" orders
-    /// CHECK: ignore
+    /// CHECK: ok
     #[account(mut)]
     pub user_prc_token: AccountInfo<'info>, // Withdraw pricing tokens if the order is filled or partially filled
-    /// CHECK: ignore
+    /// CHECK: ok
     #[account(mut)]
     pub mkt_vault: AccountInfo<'info>,
-    /// CHECK: ignore
+    /// CHECK: ok
     #[account(mut)]
     pub prc_vault: AccountInfo<'info>,
-    /// CHECK: ignore
+    /// CHECK: ok
     #[account(mut)]
     pub orders: AccountInfo<'info>,
-    /// CHECK: ignore
+    /// CHECK: ok
     #[account(mut)]
     pub settle_a: AccountInfo<'info>,
-    /// CHECK: ignore
+    /// CHECK: ok
     #[account(mut)]
     pub settle_b: AccountInfo<'info>,
-    /// CHECK: ignore
+    /// CHECK: ok
     #[account(mut, signer)]
     pub result: AccountInfo<'info>,
-    /// CHECK: ignore
+    /// CHECK: ok
     #[account(address = token::ID)]
     pub spl_token_prog: AccountInfo<'info>,
-    /// CHECK: ignore
+    /// CHECK: ok
     #[account(address = security_token::ID)]
     pub ast_token_prog: AccountInfo<'info>,
 }
@@ -2765,33 +2867,33 @@ pub struct CancelOrder<'info> {
     pub market: Account<'info, Market>,
     #[account(mut)]
     pub state: Account<'info, MarketState>,
-    /// CHECK: ignore
+    /// CHECK: ok
     pub agent: AccountInfo<'info>,
-    /// CHECK: ignore
+    /// CHECK: ok
     #[account(mut, signer)]
     pub user: AccountInfo<'info>,
-    /// CHECK: ignore
+    /// CHECK: ok
     #[account(mut)]
     pub user_mkt_token: AccountInfo<'info>,
-    /// CHECK: ignore
+    /// CHECK: ok
     #[account(mut)]
     pub user_prc_token: AccountInfo<'info>,
-    /// CHECK: ignore
+    /// CHECK: ok
     #[account(mut)]
     pub mkt_vault: AccountInfo<'info>,
-    /// CHECK: ignore
+    /// CHECK: ok
     #[account(mut)]
     pub prc_vault: AccountInfo<'info>,
-    /// CHECK: ignore
+    /// CHECK: ok
     #[account(mut)]
     pub orders: AccountInfo<'info>,
-    /// CHECK: ignore
+    /// CHECK: ok
     #[account(mut, signer)]
     pub result: AccountInfo<'info>,
-    /// CHECK: ignore
+    /// CHECK: ok
     #[account(address = token::ID)]
     pub spl_token_prog: AccountInfo<'info>,
-    /// CHECK: ignore
+    /// CHECK: ok
     #[account(address = security_token::ID)]
     pub ast_token_prog: AccountInfo<'info>,
 }
@@ -2801,19 +2903,19 @@ pub struct ManagerCancelOrder<'info> {
     pub market: Account<'info, Market>,
     #[account(mut)]
     pub state: Account<'info, MarketState>,
-    /// CHECK: ignore
+    /// CHECK: ok
     #[account(mut, signer)]
     pub manager: AccountInfo<'info>,
-    /// CHECK: ignore
+    /// CHECK: ok
     #[account(mut)]
     pub orders: AccountInfo<'info>,
-    /// CHECK: ignore
+    /// CHECK: ok
     #[account(mut, signer)]
     pub result: AccountInfo<'info>,
-    /// CHECK: ignore
+    /// CHECK: ok
     #[account(mut)]
     pub settle_a: AccountInfo<'info>,
-    /// CHECK: ignore
+    /// CHECK: ok
     #[account(mut)]
     pub settle_b: AccountInfo<'info>,
 }
@@ -2823,53 +2925,92 @@ pub struct Withdraw<'info> {
     pub market: Account<'info, Market>,
     #[account(mut)]
     pub state: Account<'info, MarketState>,
-    /// CHECK: ignore
+    /// CHECK: ok
     pub agent: AccountInfo<'info>,
-    /// CHECK: ignore
+    /// CHECK: ok
     #[account(mut, signer)]
     pub user: AccountInfo<'info>,
-    /// CHECK: ignore
+    /// CHECK: ok
     #[account(mut)]
     pub user_mkt_token: AccountInfo<'info>,
-    /// CHECK: ignore
+    /// CHECK: ok
     #[account(mut)]
     pub user_prc_token: AccountInfo<'info>,
-    /// CHECK: ignore
+    /// CHECK: ok
     #[account(mut)]
     pub mkt_vault: AccountInfo<'info>,
-    /// CHECK: ignore
+    /// CHECK: ok
     #[account(mut)]
     pub prc_vault: AccountInfo<'info>,
-    /// CHECK: ignore
+    /// CHECK: ok
     #[account(mut)]
     pub settle: AccountInfo<'info>,
-    /// CHECK: ignore
+    /// CHECK: ok
     #[account(mut, signer)]
     pub result: AccountInfo<'info>,
-    /// CHECK: ignore
+    /// CHECK: ok
     #[account(address = token::ID)]
     pub spl_token_prog: AccountInfo<'info>,
-    /// CHECK: ignore
+    /// CHECK: ok
+    #[account(address = security_token::ID)]
+    pub ast_token_prog: AccountInfo<'info>,
+}
+
+#[derive(Accounts)]
+pub struct ManagerWithdraw<'info> {
+    pub market: Account<'info, Market>,
+    #[account(mut)]
+    pub state: Account<'info, MarketState>,
+    /// CHECK: ok
+    pub agent: AccountInfo<'info>,
+    /// CHECK: ok
+    #[account(mut, signer)]
+    pub manager: AccountInfo<'info>,
+    /// CHECK: ok
+    #[account(mut)]
+    pub user: AccountInfo<'info>,
+    /// CHECK: ok
+    #[account(mut)]
+    pub user_mkt_token: AccountInfo<'info>,
+    /// CHECK: ok
+    #[account(mut)]
+    pub user_prc_token: AccountInfo<'info>,
+    /// CHECK: ok
+    #[account(mut)]
+    pub mkt_vault: AccountInfo<'info>,
+    /// CHECK: ok
+    #[account(mut)]
+    pub prc_vault: AccountInfo<'info>,
+    /// CHECK: ok
+    #[account(mut)]
+    pub settle: AccountInfo<'info>,
+    /// CHECK: ok
+    #[account(mut, signer)]
+    pub result: AccountInfo<'info>,
+    /// CHECK: ok
+    #[account(address = token::ID)]
+    pub spl_token_prog: AccountInfo<'info>,
+    /// CHECK: ok
     #[account(address = security_token::ID)]
     pub ast_token_prog: AccountInfo<'info>,
 }
 
 #[derive(Accounts)]
 pub struct CloseTradeResult<'info> {
-    /// CHECK: ignore
+    /// CHECK: ok
     #[account(mut)]
     pub fee_receiver: AccountInfo<'info>,
-    /// CHECK: ignore
+    /// CHECK: ok
     #[account(mut, signer, close = fee_receiver)]
     pub result: Account<'info, TradeResult>,
 }
 
 #[derive(Accounts)]
 pub struct CloseWithdrawResult<'info> {
-    /// CHECK: ignore
+    /// CHECK: ok
     #[account(mut)]
     pub fee_receiver: AccountInfo<'info>,
-    /// CHECK: ignore
+    /// CHECK: ok
     #[account(mut, signer, close = fee_receiver)]
     pub result: Account<'info, WithdrawResult>,
 }
@@ -2879,17 +3020,17 @@ pub struct ExtendLog<'info> {
     pub market: Account<'info, Market>,
     #[account(mut)]
     pub state: Account<'info, MarketState>,
-    /// CHECK: ignore
+    /// CHECK: ok
     #[account(mut, signer)]
     pub user: AccountInfo<'info>,
-    /// CHECK: ignore
+    /// CHECK: ok
     #[account(mut)]
     pub settle: AccountInfo<'info>,
 }
 
 #[derive(Accounts)]
 pub struct Version<'info> {
-    /// CHECK: ignore
+    /// CHECK: ok
     #[account(mut)]
     pub result: AccountInfo<'info>,
 }

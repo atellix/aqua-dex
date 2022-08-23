@@ -113,7 +113,7 @@ async function main() {
     const tokenMint1 = new PublicKey(mktData.tokenMint1) // Market token
     const tokenMint2 = new PublicKey(mktData.tokenMint2) // Pricing token
 
-    var accountId1 = 'b87a2001-9ca4-435f-b3d0-43a8e607f1b9' // Vault
+    var accountId1 = 'd7f8fe9e-de94-453b-88ac-f18bf95d8c8b' // Vault
     var accountId2 = '0d29574d-5707-4291-b0bf-d0f69b172dc9' // User Account
     var accountBuf1 = Buffer.from(uuidparse(accountId1).reverse())
     var accountBuf2 = Buffer.from(uuidparse(accountId2).reverse())
@@ -190,7 +190,7 @@ async function main() {
                     astTokenProg: securityTokenPK,
                 },
                 remainingAccounts: [
-                    { pubkey: new PublicKey('D3GCG2hV59N5mFkMNfMTMACfs2BLHyEEbRdtmBgah9nA'), isWritable: false, isSigner: false }, // From: Market auth
+                    { pubkey: new PublicKey('E2AoFArp1bKmuf2aHZMYZgnNuqBcGyGCVuFZtxHsVv7g'), isWritable: false, isSigner: false }, // From: Market auth
                     { pubkey: new PublicKey('3uGbEYywK2Lz1dPJtzXmEyDbTiDUoKcGqBAsEs5cpxgY'), isWritable: false, isSigner: false }, // To: User auth
                 ],
                 signers: [resultData1],
@@ -229,7 +229,7 @@ async function main() {
                 signers: [resultData1],
                 remainingAccounts: [
                     { pubkey: new PublicKey('3uGbEYywK2Lz1dPJtzXmEyDbTiDUoKcGqBAsEs5cpxgY'), isWritable: false, isSigner: false }, // From: User auth
-                    { pubkey: new PublicKey('D3GCG2hV59N5mFkMNfMTMACfs2BLHyEEbRdtmBgah9nA'), isWritable: false, isSigner: false }, // To: Market auth
+                    { pubkey: new PublicKey('E2AoFArp1bKmuf2aHZMYZgnNuqBcGyGCVuFZtxHsVv7g'), isWritable: false, isSigner: false }, // To: Market auth
                 ],
             }
         ))
