@@ -1,7 +1,7 @@
 use std::{ io::Cursor, string::String, result::Result as FnResult, mem::size_of, convert::TryFrom };
-use bytemuck::{ Pod, Zeroable, cast_slice_mut };
+use bytemuck::{ Pod, Zeroable, cast_slice_mut, cast_slice };
 use num_enum::{ TryFromPrimitive, IntoPrimitive };
-use arrayref::{ mut_array_refs };
+use arrayref::{ mut_array_refs, array_refs };
 use anchor_lang::prelude::*;
 use anchor_spl::token::{ self, Transfer as SPL_Transfer, Token };
 use anchor_spl::associated_token::{ self, AssociatedToken };
@@ -498,6 +498,20 @@ fn log_rollover(
     Ok(())
 }
 
+fn log_reimburse(
+    market: &Market,
+    state: &mut MarketState,
+    user: &AccountInfo,
+) -> anchor_lang::Result<()> {
+    state.log_deposit_balance = state.log_deposit_balance.checked_sub(market.log_reimburse).ok_or(error!(ErrorCode::Overflow))?;
+
+    let mut user_lamports = user.lamports();
+    user_lamports = user_lamports.checked_add(market.log_reimburse).ok_or(error!(ErrorCode::Overflow))?;
+    **user.lamports.borrow_mut() = user_lamports;
+
+    Ok(())
+}
+
 fn valid_order(order_type: OrderDT, leaf: &LeafNode, user_key: &Pubkey, sl: &SlabPageAlloc, expired_orders: &mut Vec<u128>, clock_ts: i64) -> bool {
     let order = sl.index::<Order>(order_type as u16, leaf.slot() as usize);
     let valid_expiry: bool = order.expiry == 0 || order.expiry < clock_ts;      // Check expiry timestamp if needed
@@ -783,6 +797,7 @@ pub mod aqua_dex {
             order_counter: 0,
             active_bid: 0,
             active_ask: 0,
+            log_deposit_balance: 0,
             mkt_vault_balance: 0,
             mkt_order_balance: 0,
             mkt_user_balance: 0,
@@ -898,6 +913,10 @@ pub mod aqua_dex {
             let new_settlement_log = av.get(0).unwrap();
             let market_pk: Pubkey = market.key();
             log_rollover(state_upd, market_pk, acc_settle2, new_settlement_log)?;
+            log_reimburse(market, state_upd, acc_user)?;
+            let mut market_lamports = state_upd.to_account_info().lamports();
+            market_lamports = market_lamports.checked_sub(market.log_reimburse).ok_or(error!(ErrorCode::Overflow))?;
+            **state_upd.to_account_info().lamports.borrow_mut() = market_lamports;
         }
 
         // Check expiration parameters
@@ -1140,7 +1159,14 @@ pub mod aqua_dex {
             state_upd.prc_order_balance,
         );*/
 
-        // TODO: Pay for settlement log space
+        // Deposit lamports for settlement log space
+        let mut user_lamports = ctx.accounts.user.lamports();
+        user_lamports = user_lamports.checked_sub(market.log_fee).ok_or(error!(ErrorCode::Overflow))?;
+        **ctx.accounts.user.lamports.borrow_mut() = user_lamports;
+        let mut market_lamports = state_upd.to_account_info().lamports();
+        market_lamports = market_lamports.checked_add(market.log_fee).ok_or(error!(ErrorCode::Overflow))?;
+        **state_upd.to_account_info().lamports.borrow_mut() = market_lamports;
+        state_upd.log_deposit_balance = state_upd.log_deposit_balance.checked_add(market.log_fee).ok_or(error!(ErrorCode::Overflow))?;
 
         // Send tokens to the vault
         let mint_type = MintType::try_from(market.prc_mint_type).map_err(|_| ErrorCode::InvalidParameters)?;
@@ -1258,6 +1284,10 @@ pub mod aqua_dex {
             let new_settlement_log = av.get(0).unwrap();
             let market_pk: Pubkey = market.key();
             log_rollover(state_upd, market_pk, acc_settle2, new_settlement_log)?;
+            log_reimburse(market, state_upd, acc_user)?;
+            let mut market_lamports = state_upd.to_account_info().lamports();
+            market_lamports = market_lamports.checked_sub(market.log_reimburse).ok_or(error!(ErrorCode::Overflow))?;
+            **state_upd.to_account_info().lamports.borrow_mut() = market_lamports;
         }
 
         // Check expiration parameters
@@ -1486,7 +1516,14 @@ pub mod aqua_dex {
             state_upd.mkt_order_balance,
         );*/
 
-        // TODO: Pay for settlement log space
+        // Deposit lamports for settlement log space
+        let mut user_lamports = ctx.accounts.user.lamports();
+        user_lamports = user_lamports.checked_sub(market.log_fee).ok_or(error!(ErrorCode::Overflow))?;
+        **ctx.accounts.user.lamports.borrow_mut() = user_lamports;
+        let mut market_lamports = state_upd.to_account_info().lamports();
+        market_lamports = market_lamports.checked_add(market.log_fee).ok_or(error!(ErrorCode::Overflow))?;
+        **state_upd.to_account_info().lamports.borrow_mut() = market_lamports;
+        state_upd.log_deposit_balance = state_upd.log_deposit_balance.checked_add(market.log_fee).ok_or(error!(ErrorCode::Overflow))?;
 
         // Send tokens to the vault
         let mint_type = MintType::try_from(market.mkt_mint_type).map_err(|_| ErrorCode::InvalidParameters)?;
@@ -1607,6 +1644,10 @@ pub mod aqua_dex {
             let new_settlement_log = av.get(0).unwrap();
             let market_pk: Pubkey = market.key();
             log_rollover(state_upd, market_pk, acc_settle2, new_settlement_log)?;
+            log_reimburse(market, state_upd, acc_user)?;
+            let mut market_lamports = state_upd.to_account_info().lamports();
+            market_lamports = market_lamports.checked_sub(market.log_reimburse).ok_or(error!(ErrorCode::Overflow))?;
+            **state_upd.to_account_info().lamports.borrow_mut() = market_lamports;
         }
 
         msg!("Atellix: Market Bid: By Qty: {} Quantity: {} Net Price: {}", inp_by_quantity.to_string(), inp_quantity.to_string(), inp_net_price.to_string());
@@ -1977,6 +2018,10 @@ pub mod aqua_dex {
             let new_settlement_log = av.get(0).unwrap();
             let market_pk: Pubkey = market.key();
             log_rollover(state_upd, market_pk, acc_settle2, new_settlement_log)?;
+            log_reimburse(market, state_upd, acc_user)?;
+            let mut market_lamports = state_upd.to_account_info().lamports();
+            market_lamports = market_lamports.checked_sub(market.log_reimburse).ok_or(error!(ErrorCode::Overflow))?;
+            **state_upd.to_account_info().lamports.borrow_mut() = market_lamports;
         }
 
         msg!("Atellix: Market Ask: By Qty: {} Quantity: {} Net Price: {}", inp_by_quantity.to_string(), inp_quantity.to_string(), inp_net_price.to_string());
@@ -2474,6 +2519,16 @@ pub mod aqua_dex {
             settle_header[0].items = settle_header[0].items.checked_sub(1).ok_or(error!(ErrorCode::Overflow))?;
             map_remove(sl, DT::Account, log_node.key())?;
             AccountEntry::free_index(sl, DT::Account, log_node.slot())?;
+
+            // Rebate to the user for settlement log space
+            state.log_deposit_balance = state.log_deposit_balance.checked_sub(market.log_rebate).ok_or(error!(ErrorCode::Overflow))?;
+            let mut market_lamports = state.to_account_info().lamports();
+            market_lamports = market_lamports.checked_sub(market.log_rebate).ok_or(error!(ErrorCode::Overflow))?;
+            **state.to_account_info().lamports.borrow_mut() = market_lamports;
+            let mut user_lamports = ctx.accounts.owner.lamports();
+            user_lamports = user_lamports.checked_add(market.log_rebate).ok_or(error!(ErrorCode::Overflow))?;
+            **ctx.accounts.owner.lamports.borrow_mut() = user_lamports;
+
             // Write result
             store_struct::<WithdrawResult>(&result, acc_result)?;
         } else {
@@ -2509,10 +2564,10 @@ pub mod aqua_dex {
         let market = &ctx.accounts.market;
         let market_state = &ctx.accounts.state;
 
+        let acc_user = &ctx.accounts.user.to_account_info();
         let acc_orders = &ctx.accounts.orders.to_account_info();
         let acc_settle1 = &ctx.accounts.settle_a.to_account_info();
         let acc_settle2 = &ctx.accounts.settle_b.to_account_info();
-        verify_matching_accounts(&market.orders, &acc_orders.key, Some(String::from("Invalid orderbook")))?;
 
         let s1 = verify_matching_accounts(&market_state.settle_a, &acc_settle1.key, Some(String::from("Settlement log 1")));
         let s2 = verify_matching_accounts(&market_state.settle_b, &acc_settle2.key, Some(String::from("Settlement log 2")));
@@ -2535,6 +2590,10 @@ pub mod aqua_dex {
             let new_settlement_log = av.get(0).unwrap();
             let market_pk: Pubkey = market.key();
             log_rollover(state_upd, market_pk, acc_settle2, new_settlement_log)?;
+            log_reimburse(market, state_upd, acc_user)?;
+            let mut market_lamports = state_upd.to_account_info().lamports();
+            market_lamports = market_lamports.checked_sub(market.log_reimburse).ok_or(error!(ErrorCode::Overflow))?;
+            **state_upd.to_account_info().lamports.borrow_mut() = market_lamports;
         }
 
         let side = Side::try_from(inp_side).or(Err(error!(ErrorCode::InvalidParameters)))?;
@@ -2635,6 +2694,7 @@ pub mod aqua_dex {
             let new_settlement_log = av.get(0).unwrap();
             let market_pk: Pubkey = market.key();
             log_rollover(state_upd, market_pk, acc_settle2, new_settlement_log)?;
+            // Manager is not reimbursed for settlement log rollover
         }
 
         let side = Side::try_from(inp_side).or(Err(error!(ErrorCode::InvalidParameters)))?;
@@ -2729,8 +2789,10 @@ pub mod aqua_dex {
         let new_settlement_log = av.get(0).unwrap();
         let market_pk: Pubkey = market.key();
         log_rollover(state_upd, market_pk, acc_settle, new_settlement_log)?;
-
-        // TODO: Reimburse user
+        log_reimburse(market, state_upd, acc_user)?;
+        let mut market_lamports = state_upd.to_account_info().lamports();
+        market_lamports = market_lamports.checked_sub(market.log_reimburse).ok_or(error!(ErrorCode::Overflow))?;
+        **state_upd.to_account_info().lamports.borrow_mut() = market_lamports;
 
         Ok(())
     }
@@ -2830,7 +2892,24 @@ pub mod aqua_dex {
         Ok(())
     }
 
-    /*pub fn manager_withdraw_fees<'a, 'b, 'c, 'info>(ctx: Context<'a, 'b, 'c, 'info, Withdraw<'info>>) -> anchor_lang::Result<()> {
+    pub fn log_status<'a, 'b, 'c, 'info>(ctx: Context<'a, 'b, 'c, 'info, LogStatus<'info>>) -> anchor_lang::Result<LogStatusResult> {
+        let acc_settle = &ctx.accounts.settle.to_account_info();
+        let log_data: &[u8] = &acc_settle.try_borrow_data()?;
+        let (header, _page_table) = array_refs![log_data, size_of::<AccountsHeader>(); .. ;];
+        let settle_header: &[AccountsHeader] = cast_slice(header);
+        Ok(LogStatusResult {
+            prev: settle_header[0].prev,
+            next: settle_header[0].next,
+            items: settle_header[0].items,
+        })
+    }
+
+    // Deposit or withdraw lamports for settlement log accounts and reimbursements
+    /*pub fn manager_transfer_sol<'a, 'b, 'c, 'info>(ctx: Context<'a, 'b, 'c, 'info, ManagerTransferSol<'info>>,
+        inp_withdraw: bool,
+        inp_all: bool,
+        inp_amount: u64,
+    ) -> anchor_lang::Result<()> {
         Ok(())
     }*/
 
@@ -3266,6 +3345,9 @@ pub struct ExpireOrder<'info> {
     #[account(mut)]
     pub state: Account<'info, MarketState>,
     /// CHECK: ok
+    #[account(mut, signer)]
+    pub user: AccountInfo<'info>,
+    /// CHECK: ok
     #[account(mut)]
     pub orders: AccountInfo<'info>,
     /// CHECK: ok
@@ -3348,6 +3430,12 @@ pub struct ManagerWithdraw<'info> {
     /// CHECK: ok
     #[account(address = security_token::ID)]
     pub ast_token_prog: AccountInfo<'info>,
+}
+
+#[derive(Accounts)]
+pub struct LogStatus<'info> {
+    /// CHECK: ok
+    pub settle: AccountInfo<'info>,
 }
 
 #[derive(Accounts)]
@@ -3514,9 +3602,9 @@ pub struct Market {
     pub active: bool,                   // Active flag
     pub expire_enable: bool,            // Enable order expiration
     pub expire_min: i64,                // Minimum time an order must be posted before expiration
-    pub log_fee: u64,                   // Fee for settlement log space for posted orders
-    pub log_rebate: u64,                // Rebate for withdrawal
-    pub log_reimburse: u64,             // Reimbursement for adding a new settlement log
+    pub log_fee: u64,                   // Fee for settlement log space for posted orders (lamports)
+    pub log_rebate: u64,                // Rebate for withdrawal (lamports)
+    pub log_reimburse: u64,             // Reimbursement for adding a new settlement log (lamports)
     pub taker_fee: u32,                 // Taker commission fee
     pub state: Pubkey,                  // Market statistics (frequently updated market details)
     pub agent: Pubkey,                  // Program derived address for signing transfers
@@ -3541,6 +3629,7 @@ pub struct MarketState {
     pub settle_a: Pubkey,               // Settlement log 1 (the active log)
     pub settle_b: Pubkey,               // Settlement log 2 (the next log)
     pub log_rollover: bool,             // Request for a new settlement log account for rollover
+    pub log_deposit_balance: u64,       // Lamports deposited for allocate new settlement log space
     pub action_counter: u64,            // Action ids
     pub order_counter: u64,             // Order index for Critmap ids (lower 64 bits)
     pub active_bid: u64,                // Active bid orders in the orderbook
@@ -3566,7 +3655,6 @@ pub struct UserVault {
     pub mkt_tokens: u64,                // Market tokens in the user's vault
     pub prc_tokens: u64,                // Pricing tokens in the user's vault
 }
-
 // Size: 8 + 1 + 32 + 32 + 8 + 8 = 89
 
 #[account]
@@ -3610,6 +3698,13 @@ impl WithdrawResult {
     pub fn set_prc_tokens(&mut self, new_amount: u64) {
         self.prc_tokens = new_amount;
     }
+}
+
+#[account]
+pub struct LogStatusResult {
+    pub prev: Pubkey,
+    pub next: Pubkey,
+    pub items: u32,
 }
 
 #[event]
