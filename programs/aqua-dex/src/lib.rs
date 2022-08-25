@@ -624,6 +624,9 @@ pub mod aqua_dex {
         inp_expire_enable: bool,
         inp_expire_min: i64,
         inp_taker_fee: u32,
+        inp_log_fee: u64,
+        inp_log_rebate: u64,
+        inp_log_reimburse: u64,
         inp_mkt_vault_uuid: u128,
         inp_prc_vault_uuid: u128,
     ) -> anchor_lang::Result<()> {
@@ -766,9 +769,9 @@ pub mod aqua_dex {
             active: true,
             expire_enable: inp_expire_enable,
             expire_min: inp_expire_min,
-            log_fee: 0,
-            log_rebate: 0,
-            log_reimburse: 0,
+            log_fee: inp_log_fee,
+            log_rebate: inp_log_rebate,
+            log_reimburse: inp_log_reimburse,
             taker_fee: inp_taker_fee,
             state: *acc_state.key,
             agent: *acc_agent.key,
@@ -1079,6 +1082,7 @@ pub mod aqua_dex {
                     order_id: expired_id,
                     price: Order::price(expire_leaf.key()),
                     quantity: expire_amount,
+                    tokens: expire_amount,
                 });
                 log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &expire_leaf.owner(), true, expire_amount)?; // No multiply for Ask order
                 map_remove(ob, DT::AskOrder, expire_leaf.key())?;
@@ -1448,6 +1452,7 @@ pub mod aqua_dex {
                     order_id: expired_id,
                     price: Order::price(expire_leaf.key()),
                     quantity: expire_amount,
+                    tokens: expire_total,
                 });
                 log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &expire_leaf.owner(), false, expire_total)?; // Total calculated
                 map_remove(ob, DT::BidOrder, expire_leaf.key())?;
@@ -1877,6 +1882,7 @@ pub mod aqua_dex {
                     order_id: expired_id,
                     price: Order::price(expire_leaf.key()),
                     quantity: expire_amount,
+                    tokens: expire_amount,
                 });
                 log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &expire_leaf.owner(), true, expire_amount)?; // No multiply for Ask order
                 map_remove(ob, DT::AskOrder, expire_leaf.key())?;
@@ -2253,6 +2259,7 @@ pub mod aqua_dex {
                     order_id: expired_id,
                     price: Order::price(expire_leaf.key()),
                     quantity: expire_amount,
+                    tokens: expire_total,
                 });
                 log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &expire_leaf.owner(), false, expire_total)?; // Total calculated
                 map_remove(ob, DT::BidOrder, expire_leaf.key())?;
@@ -2353,7 +2360,7 @@ pub mod aqua_dex {
         let market = &ctx.accounts.market;
         let market_state = &ctx.accounts.state;
         let acc_agent = &ctx.accounts.agent.to_account_info();
-        let acc_user = &ctx.accounts.user.to_account_info();
+        let acc_owner = &ctx.accounts.owner.to_account_info();
         let acc_mkt_vault = &ctx.accounts.mkt_vault.to_account_info();
         let acc_prc_vault = &ctx.accounts.prc_vault.to_account_info();
         let acc_orders = &ctx.accounts.orders.to_account_info();
@@ -2378,7 +2385,7 @@ pub mod aqua_dex {
             return Err(ErrorCode::OrderNotFound.into());
         }
         let leaf = item.unwrap();
-        if leaf.owner() != *acc_user.key {
+        if leaf.owner() != *acc_owner.key {
             msg!("Order not owned by user");
             return Err(ErrorCode::AccessDenied.into());
         }
@@ -2410,6 +2417,15 @@ pub mod aqua_dex {
         map_remove(sl, order_type, leaf.key())?;
         Order::free_index(sl, order_type, leaf.slot())?;
 
+        // Rebate to the user for settlement log space
+        state.log_deposit_balance = state.log_deposit_balance.checked_sub(market.log_rebate).ok_or(error!(ErrorCode::Overflow))?;
+        let mut market_lamports = state.to_account_info().lamports();
+        market_lamports = market_lamports.checked_sub(market.log_rebate).ok_or(error!(ErrorCode::Overflow))?;
+        **state.to_account_info().lamports.borrow_mut() = market_lamports;
+        let mut user_lamports = ctx.accounts.owner.lamports();
+        user_lamports = user_lamports.checked_add(market.log_rebate).ok_or(error!(ErrorCode::Overflow))?;
+        **ctx.accounts.owner.lamports.borrow_mut() = user_lamports;
+
         let seeds = &[ctx.accounts.market.to_account_info().key.as_ref(), &[market.agent_nonce]];
         let signer = &[&seeds[..]];
         if side == Side::Bid {
@@ -2438,8 +2454,8 @@ pub mod aqua_dex {
             event_type: 0,
             action_id: state.action_counter,
             market: ctx.accounts.market.key(),
-            owner: acc_user.key(),
-            user: acc_user.key(),
+            owner: acc_owner.key(),
+            user: acc_owner.key(),
             market_token: ctx.accounts.user_mkt_token.key(),
             pricing_token: ctx.accounts.user_prc_token.key(),
             manager: false,
@@ -2617,7 +2633,7 @@ pub mod aqua_dex {
             let order_owner: Pubkey = leaf.owner();
             let order_price = Order::price(order_id);
             let order_qty = order.amount();
-            let tokens_out = match side {
+            let tokens = match side {
                 Side::Bid => {
                     let mkt_decimal_base: u64 = 10;
                     let mkt_decimal_factor: u64 = mkt_decimal_base.pow(market.mkt_decimals as u32);
@@ -2646,6 +2662,7 @@ pub mod aqua_dex {
                 order_id: order_id,
                 price: order_price,
                 quantity: order_qty,
+                tokens: tokens,
             });
         }
 
@@ -2657,7 +2674,6 @@ pub mod aqua_dex {
         inp_side: u8,               // 0 - Bid, 1 - Ask
         inp_order_id: u128,
     ) -> anchor_lang::Result<()> {
-
         let market = &ctx.accounts.market;
         let market_state = &ctx.accounts.state;
         let acc_manager = &ctx.accounts.manager.to_account_info();
@@ -2905,21 +2921,72 @@ pub mod aqua_dex {
     }
 
     // Deposit or withdraw lamports for settlement log accounts and reimbursements
-    /*pub fn manager_transfer_sol<'a, 'b, 'c, 'info>(ctx: Context<'a, 'b, 'c, 'info, ManagerTransferSol<'info>>,
+    pub fn manager_transfer_sol<'a, 'b, 'c, 'info>(ctx: Context<'a, 'b, 'c, 'info, ManagerTransferSol<'info>>,
         inp_withdraw: bool,
         inp_all: bool,
         inp_amount: u64,
     ) -> anchor_lang::Result<()> {
-        Ok(())
-    }*/
+        let market = &ctx.accounts.market;
+        let state = &mut ctx.accounts.state;
+        let acc_manager = &ctx.accounts.manager.to_account_info();
 
-    /*pub fn manager_update_market<'a, 'b, 'c, 'info>(ctx: Context<'a, 'b, 'c, 'info, Withdraw<'info>>) -> anchor_lang::Result<()> {
-        Ok(())
-    }*/
+        if market.manager != *acc_manager.key {
+            msg!("Not manager");
+            return Err(ErrorCode::AccessDenied.into());
+        }
+        verify_matching_accounts(&market.state, &state.key(), Some(String::from("Invalid market state")))?;
+        let mut market_lamports = state.to_account_info().lamports();
+        let mut manager_lamports = acc_manager.lamports();
 
-    /*pub fn manager_consolidate<'a, 'b, 'c, 'info>(ctx: Context<'a, 'b, 'c, 'info, Withdraw<'info>>) -> anchor_lang::Result<()> {
+        if inp_withdraw {
+            let withdraw_amount: u64;
+            if inp_all {
+                withdraw_amount = state.log_deposit_balance;
+            } else {
+                withdraw_amount = inp_amount;
+            }
+            state.log_deposit_balance = state.log_deposit_balance.checked_sub(withdraw_amount).ok_or(error!(ErrorCode::Overflow))?;
+            market_lamports = market_lamports.checked_sub(withdraw_amount).ok_or(error!(ErrorCode::Overflow))?;
+            manager_lamports = manager_lamports.checked_add(withdraw_amount).ok_or(error!(ErrorCode::Overflow))?;
+        } else { // Deposit lamports
+            manager_lamports = manager_lamports.checked_sub(inp_amount).ok_or(error!(ErrorCode::Overflow))?;
+            market_lamports = market_lamports.checked_add(inp_amount).ok_or(error!(ErrorCode::Overflow))?;
+            state.log_deposit_balance = state.log_deposit_balance.checked_add(inp_amount).ok_or(error!(ErrorCode::Overflow))?;
+        }
+
+        **state.to_account_info().lamports.borrow_mut() = market_lamports;
+        **acc_manager.lamports.borrow_mut() = manager_lamports;
+ 
         Ok(())
-    }*/
+    }
+
+    pub fn manager_update_market<'a, 'b, 'c, 'info>(ctx: Context<'a, 'b, 'c, 'info, ManagerUpdateMarket<'info>>,
+        inp_active: bool,
+        inp_expire_enable: bool,
+        inp_expire_min: i64,
+        inp_taker_fee: u32,
+        inp_log_fee: u64,
+        inp_log_rebate: u64,
+        inp_log_reimburse: u64,
+    ) -> anchor_lang::Result<()> {
+        let market = &mut ctx.accounts.market;
+        let acc_manager = &ctx.accounts.manager.to_account_info();
+
+        if market.manager != *acc_manager.key {
+            msg!("Not manager");
+            return Err(ErrorCode::AccessDenied.into());
+        }
+        
+        market.active = inp_active;
+        market.expire_enable = inp_expire_enable;
+        market.expire_min = inp_expire_min;
+        market.taker_fee = inp_taker_fee;
+        market.log_fee = inp_log_fee;
+        market.log_rebate = inp_log_rebate;
+        market.log_reimburse = inp_log_reimburse;
+
+        Ok(())
+    }
 
     // Create user vaults (manager only)
     pub fn create_vault<'a, 'b, 'c, 'info>(ctx: Context<'a, 'b, 'c, 'info, CreateVault<'info>>) -> anchor_lang::Result<()> {
@@ -3290,7 +3357,7 @@ pub struct CancelOrder<'info> {
     pub agent: AccountInfo<'info>,
     /// CHECK: ok
     #[account(mut, signer)]
-    pub user: AccountInfo<'info>,
+    pub owner: AccountInfo<'info>,
     /// CHECK: ok
     #[account(mut)]
     pub user_mkt_token: AccountInfo<'info>,
@@ -3503,6 +3570,25 @@ pub struct VaultWithdraw<'info> {
     /// CHECK: ok
     #[account(address = security_token::ID)]
     pub ast_token_prog: AccountInfo<'info>,
+}
+
+#[derive(Accounts)]
+pub struct ManagerTransferSol<'info> {
+    pub market: Account<'info, Market>,
+    #[account(mut)]
+    pub state: Account<'info, MarketState>,
+    /// CHECK: ok
+    #[account(mut, signer)]
+    pub manager: AccountInfo<'info>,
+}
+
+#[derive(Accounts)]
+pub struct ManagerUpdateMarket<'info> {
+    #[account(mut)]
+    pub market: Account<'info, Market>,
+    /// CHECK: ok
+    #[account(mut, signer)]
+    pub manager: AccountInfo<'info>,
 }
 
 #[derive(Accounts)]
@@ -3768,6 +3854,7 @@ pub struct ExpireEvent {
     pub order_id: u128,
     pub price: u64,
     pub quantity: u64,
+    pub tokens: u64,
 }
 
 #[event]
