@@ -51,8 +51,8 @@ async function createTokenMint() {
 async function main() {
     //var mint1 = await createTokenMint()
     //var mint2 = await createTokenMint()
-    var mint1 = '3sd64AZF5fAC83i7wJ44Jxo145J6oE9fT2of6MtBjBeK'
-    var mint2 = '3dkM9fyZ6AADz4SZLWh29rgrdwsLwKgubyM74wJzLdBs'
+    var mint1 = 'EXnXikUxX8gE8wd2cvTanuycdDWki7yf2cBZhZvM2RU5'
+    var mint2 = 'Gh9ZwEmdLJ8DscKNTkTqPbNwLNNBjuSzaG9Vp2KGtKJr'
     console.log("Mints: " + mint1 + " " + mint2)
     const tokenMint1 = new PublicKey(mint1)
     const tokenMint2 = new PublicKey(mint2)
@@ -61,12 +61,16 @@ async function main() {
     writeData['tokenMint1'] = tokenMint1.toString()
     writeData['tokenMint2'] = tokenMint2.toString()
 
-    market = anchor.web3.Keypair.generate()
+    securityTokenPK = new PublicKey('8JxtmFxuhmgoEFmBeZAqBVouj6DDQBwybpJnpqcYUU8M')
+
+    //market = anchor.web3.Keypair.generate()
+    marketPK = new PublicKey('DiugnZvAuabA21qhNWfRvAJT6cpx1xyXRTF3P4b4xyJw')
+    marketAuthPK = new PublicKey('E2AoFArp1bKmuf2aHZMYZgnNuqBcGyGCVuFZtxHsVv7g')
     marketState = anchor.web3.Keypair.generate()
     orders = anchor.web3.Keypair.generate()
     settle1 = anchor.web3.Keypair.generate()
     settle2 = anchor.web3.Keypair.generate()
-    writeData['market'] = market.publicKey.toString()
+    writeData['market'] = marketPK.toString()
     writeData['marketState'] = marketState.publicKey.toString()
     writeData['orders'] = orders.publicKey.toString()
     writeData['settle1'] = settle1.publicKey.toString()
@@ -78,25 +82,40 @@ async function main() {
     const settleBytes = 130 + (16384 * 8)
     const settleRent = await provider.connection.getMinimumBalanceForRentExemption(settleBytes)
 
-    const marketAgent = await programAddress([market.publicKey.toBuffer()])
-    const tokenVault1 = await associatedTokenAddress(new PublicKey(marketAgent.pubkey), tokenMint1)
-    const tokenVault2 = await associatedTokenAddress(new PublicKey(marketAgent.pubkey), tokenMint2)
+    const accountId1 = uuidv4()
+    const accountBuf1 = Buffer.from(uuidparse(accountId1).reverse())
 
-    var tx = new anchor.web3.Transaction()
-    tx.add(anchor.web3.SystemProgram.createAccount({
+    const marketAgent = await programAddress([marketPK.toBuffer()], aquadexPK)
+    const marketAgentPK = new PublicKey(marketAgent.pubkey)
+    const tokenVault1 = await programAddress([tokenMint1.toBuffer(), marketAgentPK.toBuffer(), accountBuf1], securityTokenPK)
+    const tokenVault2 = await associatedTokenAddress(marketAgentPK, tokenMint2)
+
+    console.log("Market Agent: " + marketAgent.pubkey)
+
+    console.log("Token Vault: " + tokenVault1.pubkey)
+    console.log("Token Vault UUID: " + accountId1)
+
+    console.log("Market Size: " + aquadex.account.market.size)
+    console.log("MarketState Size: " + aquadex.account.marketState.size)
+
+    var ta = new anchor.web3.Transaction()
+    /*tx.add(anchor.web3.SystemProgram.createAccount({
         fromPubkey: provider.wallet.publicKey,
         newAccountPubkey: market.publicKey,
         space: aquadex.account.market.size,
         lamports: await provider.connection.getMinimumBalanceForRentExemption(aquadex.account.market.size),
         programId: aquadexPK,
-    }))
-    tx.add(anchor.web3.SystemProgram.createAccount({
+    }))*/
+    ta.add(anchor.web3.SystemProgram.createAccount({
         fromPubkey: provider.wallet.publicKey,
         newAccountPubkey: marketState.publicKey,
         space: aquadex.account.marketState.size,
         lamports: await provider.connection.getMinimumBalanceForRentExemption(aquadex.account.marketState.size),
         programId: aquadexPK,
     }))
+    console.log(await provider.send(ta, [marketState]))
+
+    var tx = new anchor.web3.Transaction()
     tx.add(anchor.web3.SystemProgram.createAccount({
         fromPubkey: provider.wallet.publicKey,
         newAccountPubkey: orders.publicKey,
@@ -118,18 +137,41 @@ async function main() {
         lamports: settleRent,
         programId: aquadexPK,
     }))
-    await provider.send(tx, [market, marketState, orders, settle1, settle2])
 
-    console.log('Create Market')
-    await aquadex.rpc.createMarket(
+    console.log({
+        market: marketPK.toString(),
+        state: marketState.publicKey.toString(),
+        agent: new PublicKey(marketAgent.pubkey).toString(),
+        manager: provider.wallet.publicKey.toString(),
+        mktMint: tokenMint1.toString(),
+        mktVault: new PublicKey(tokenVault1.pubkey).toString(),
+        prcMint: tokenMint2.toString(),
+        prcVault: new PublicKey(tokenVault2.pubkey).toString(),
+        orders: orders.publicKey.toString(),
+        settleA: settle1.publicKey.toString(),
+        settleB: settle2.publicKey.toString(),
+        splTokenProg: TOKEN_PROGRAM_ID.toString(),
+        ascTokenProg: SPL_ASSOCIATED_TOKEN.toString(),
+        astTokenProg: securityTokenPK.toString(),
+        sysProg: SystemProgram.programId.toString(),
+        sysRent: SYSVAR_RENT_PUBKEY.toString(),
+    })
+    tx.add(aquadex.instruction.createMarket(
         marketAgent.nonce,
         tokenVault1.nonce,
         tokenVault2.nonce,
-        true,                   // Expire enable
-        new anchor.BN(1),       // Min expire
+        6,
+        6,
+        1,                                      // Mkt Mint Type - 0: SPL, 1: AST
+        0,                                      // Prc Mint Type 
+        true,                                   // Expire enable
+        new anchor.BN(1),                       // Min expire
+        new anchor.BN(1000),                    // Taker fee (X / 10,000,000)
+        new anchor.BN(uuidparse(accountId1)),   // Mkt Token UUID
+        new anchor.BN(0),                       // Prc Token UUID
         {
             accounts: {
-                market: market.publicKey,
+                market: marketPK,
                 state: marketState.publicKey,
                 agent: new PublicKey(marketAgent.pubkey),
                 manager: provider.wallet.publicKey,
@@ -142,11 +184,18 @@ async function main() {
                 settleB: settle2.publicKey,
                 splTokenProg: TOKEN_PROGRAM_ID,
                 ascTokenProg: SPL_ASSOCIATED_TOKEN,
+                astTokenProg: securityTokenPK,
                 sysProg: SystemProgram.programId,
                 sysRent: SYSVAR_RENT_PUBKEY,
-            }
+            },
+            remainingAccounts: [
+                { pubkey: marketAuthPK, isWritable: false, isSigner: false },
+            ],
         }
-    )
+    ))
+
+    console.log('Create Market')
+    console.log(await provider.send(tx, [orders, settle1, settle2]))
 
     try {
         await fs.writeFile('market.json', JSON.stringify(writeData, null, 4))

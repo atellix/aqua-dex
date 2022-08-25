@@ -69,12 +69,13 @@ function decodeOrderId(orderId) {
     return new anchor.BN(bgn.toString())
 }
 
-function formatOrder(order) {
+function formatOrder(order, price) {
     var res = {
-        tokensFilled: order.tokensFilled.toString(),
-        tokensPosted: order.tokensPosted.toString(),
-        tokensDeposited: order.tokensDeposited.toString(),
+        tokensSent: order.tokensSent.toString(),
+        tokensReceived: order.tokensReceived.toString(),
         tokensFee: order.tokensFee.toString(),
+        postedQuantity: order.postedQuantity.toString(),
+        orderPrice: price.toString(),
         orderId: encodeOrderId(order.orderId),
     }
     return res
@@ -112,7 +113,7 @@ async function main() {
     const tokenMint1 = new PublicKey(mktData.tokenMint1) // Market token
     const tokenMint2 = new PublicKey(mktData.tokenMint2) // Pricing token
 
-    var accountId1 = '2980c3a2-e8d9-4b1d-943b-fd92c13d2f62' // Vault
+    var accountId1 = 'd7f8fe9e-de94-453b-88ac-f18bf95d8c8b' // Vault
     var accountId2 = '0d29574d-5707-4291-b0bf-d0f69b172dc9' // User Account
     var accountBuf1 = Buffer.from(uuidparse(accountId1).reverse())
     var accountBuf2 = Buffer.from(uuidparse(accountId2).reverse())
@@ -163,13 +164,13 @@ async function main() {
     var order1
 
     if (true) {
-        console.log('Limit Ask 1')
-        console.log(await aquadex.rpc.limitAsk(
+        console.log('Limit Bid 1')
+        console.log(await aquadex.rpc.limitBid(
             false,
             new anchor.BN(100 * 1000000),   // Quantity
             new anchor.BN(2.5 * 1000000),   // Price
-            true,                          // Post
-            false,                           // Fill
+            true,                           // Post
+            false,                          // Fill
             new anchor.BN(0),               // Order expiry
             {
                 accounts: {
@@ -189,91 +190,25 @@ async function main() {
                     astTokenProg: securityTokenPK,
                 },
                 remainingAccounts: [
-                    { pubkey: new PublicKey('3uGbEYywK2Lz1dPJtzXmEyDbTiDUoKcGqBAsEs5cpxgY'), isWritable: false, isSigner: false }, // From: User auth
-                    { pubkey: new PublicKey('BXmUTAeeLuWHjy3crDho1YvAvje2NrJwcqnwnkDZMmDb'), isWritable: false, isSigner: false }, // To: Market auth
+                    { pubkey: new PublicKey('E2AoFArp1bKmuf2aHZMYZgnNuqBcGyGCVuFZtxHsVv7g'), isWritable: false, isSigner: false }, // From: Market auth
+                    { pubkey: new PublicKey('3uGbEYywK2Lz1dPJtzXmEyDbTiDUoKcGqBAsEs5cpxgY'), isWritable: false, isSigner: false }, // To: User auth
                 ],
                 signers: [resultData1],
             }
         ))
         var res = await aquadex.account.tradeResult.fetch(resultData1.publicKey)
         order1 = res.orderId
-        console.log(formatOrder(res))
+        console.log(formatOrder(res, new anchor.BN(2.5 * 1000000)))
     }
 
     if (true) {
-        console.log('Cancel Order 1')
-        //var orderId = decodeOrderId('00000003em1800000000000010')
-        var orderId = order1
-        console.log(await aquadex.rpc.cancelOrder(
-            1, // 0 - Bid, 1 - Ask
-            orderId,
-            {
-                accounts: {
-                    market: marketPK,
-                    state: marketStatePK,
-                    agent: new PublicKey(marketAgent.pubkey),
-                    user: provider.wallet.publicKey,
-                    userMktToken: new PublicKey(userToken1.pubkey),
-                    userPrcToken: new PublicKey(userToken2.pubkey),
-                    mktVault: new PublicKey(tokenVault1.pubkey),
-                    prcVault: new PublicKey(tokenVault2.pubkey),
-                    orders: ordersPK,
-                    result: resultData2.publicKey,
-                    splTokenProg: TOKEN_PROGRAM_ID,
-                    astTokenProg: securityTokenPK,
-                },
-                signers: [resultData2],
-                remainingAccounts: [
-                    { pubkey: new PublicKey('BXmUTAeeLuWHjy3crDho1YvAvje2NrJwcqnwnkDZMmDb'), isWritable: false, isSigner: false }, // From: Market auth
-                    { pubkey: new PublicKey('3uGbEYywK2Lz1dPJtzXmEyDbTiDUoKcGqBAsEs5cpxgY'), isWritable: false, isSigner: false }, // To: User auth
-                ],
-            }
-        ))
-        res = await aquadex.account.withdrawResult.fetch(resultData2.publicKey)
-        console.log(formatWithdraw(res))
-    }
-
-    if (false) {
-        console.log('Limit Ask 2')
-        await aquadex.rpc.limitAsk(
-            new anchor.BN(10 * 10000), // Quantity
-            new anchor.BN(5.1 * 10000), // Price
-            true,
+        console.log('Market Ask')
+        console.log(await aquadex.rpc.marketAsk(
             false,
-            new anchor.BN(0),           // Order expiry
-            {
-                accounts: {
-                    market: marketPK,
-                    state: marketStatePK,
-                    agent: new PublicKey(marketAgent.pubkey),
-                    user: provider.wallet.publicKey,
-                    userMktToken: new PublicKey(userToken1.pubkey),
-                    userPrcToken: new PublicKey(userToken2.pubkey),
-                    mktVault: new PublicKey(tokenVault1.pubkey),
-                    prcVault: new PublicKey(tokenVault2.pubkey),
-                    orders: ordersPK,
-                    settleA: settle1PK,
-                    settleB: settle2PK,
-                    result: resultData1.publicKey,
-                    splTokenProg: TOKEN_PROGRAM_ID,
-                    astTokenProg: securityTokenPK,
-                },
-                signers: [resultData1],
-            }
-        )
-        res = await aquadex.account.tradeResult.fetch(resultData1.publicKey)
-        console.log(formatOrder(res))
-    }
-
-    if (false) {
-        console.log('Limit Bid')
-        console.log(await aquadex.rpc.limitBid(
-            false,
-            new anchor.BN(25 * 1000000),        // Quantity
-            new anchor.BN(2.5 * 1000000),       // Price
-            true,                       // Post order
-            false,                      // Require filled if not posted
-            new anchor.BN(0),           // Order expiry
+            false,                              // By Qty
+            new anchor.BN(0),                   // Quantity
+            new anchor.BN(42 * 1000000),        // Net Price
+            false,                              // Require filled
             {
                 accounts: {
                     market: marketPK,
@@ -293,13 +228,13 @@ async function main() {
                 },
                 signers: [resultData1],
                 remainingAccounts: [
-                    { pubkey: new PublicKey('BXmUTAeeLuWHjy3crDho1YvAvje2NrJwcqnwnkDZMmDb'), isWritable: false, isSigner: false }, // From: Market auth
-                    { pubkey: new PublicKey('3uGbEYywK2Lz1dPJtzXmEyDbTiDUoKcGqBAsEs5cpxgY'), isWritable: false, isSigner: false }, // To: User auth
+                    { pubkey: new PublicKey('3uGbEYywK2Lz1dPJtzXmEyDbTiDUoKcGqBAsEs5cpxgY'), isWritable: false, isSigner: false }, // From: User auth
+                    { pubkey: new PublicKey('E2AoFArp1bKmuf2aHZMYZgnNuqBcGyGCVuFZtxHsVv7g'), isWritable: false, isSigner: false }, // To: Market auth
                 ],
             }
         ))
         res = await aquadex.account.tradeResult.fetch(resultData1.publicKey)
-        console.log(formatOrder(res))
+        console.log(formatOrder(res, new anchor.BN(42 * 1000000)))
     }
 }
 

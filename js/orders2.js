@@ -162,7 +162,7 @@ async function main() {
 
     var order1
 
-    if (true) {
+    if (false) {
         console.log('Limit Ask 1')
         console.log(await aquadex.rpc.limitAsk(
             false,
@@ -200,7 +200,7 @@ async function main() {
         console.log(formatOrder(res))
     }
 
-    if (true) {
+    if (false) {
         console.log('Cancel Order 1')
         //var orderId = decodeOrderId('00000003em1800000000000010')
         var orderId = order1
@@ -233,47 +233,14 @@ async function main() {
         console.log(formatWithdraw(res))
     }
 
-    if (false) {
-        console.log('Limit Ask 2')
-        await aquadex.rpc.limitAsk(
-            new anchor.BN(10 * 10000), // Quantity
-            new anchor.BN(5.1 * 10000), // Price
-            true,
+    if (true) {
+        console.log('Market Bid')
+        console.log(await aquadex.rpc.marketBid(
             false,
-            new anchor.BN(0),           // Order expiry
-            {
-                accounts: {
-                    market: marketPK,
-                    state: marketStatePK,
-                    agent: new PublicKey(marketAgent.pubkey),
-                    user: provider.wallet.publicKey,
-                    userMktToken: new PublicKey(userToken1.pubkey),
-                    userPrcToken: new PublicKey(userToken2.pubkey),
-                    mktVault: new PublicKey(tokenVault1.pubkey),
-                    prcVault: new PublicKey(tokenVault2.pubkey),
-                    orders: ordersPK,
-                    settleA: settle1PK,
-                    settleB: settle2PK,
-                    result: resultData1.publicKey,
-                    splTokenProg: TOKEN_PROGRAM_ID,
-                    astTokenProg: securityTokenPK,
-                },
-                signers: [resultData1],
-            }
-        )
-        res = await aquadex.account.tradeResult.fetch(resultData1.publicKey)
-        console.log(formatOrder(res))
-    }
-
-    if (false) {
-        console.log('Limit Bid')
-        console.log(await aquadex.rpc.limitBid(
-            false,
-            new anchor.BN(25 * 1000000),        // Quantity
-            new anchor.BN(2.5 * 1000000),       // Price
-            true,                       // Post order
-            false,                      // Require filled if not posted
-            new anchor.BN(0),           // Order expiry
+            false,                              // By Qty
+            new anchor.BN(0),                   // Quantity
+            new anchor.BN(42 * 1000000),        // Net Price
+            false,                              // Require filled
             {
                 accounts: {
                     market: marketPK,
