@@ -512,6 +512,52 @@ fn log_reimburse(
     Ok(())
 }
 
+fn log_close<'info>(
+    state: &mut MarketState,
+    settle: &AccountInfo<'info>,
+    accounts: &[AccountInfo<'info>],
+) -> anchor_lang::Result<u64> {
+    let log_data: &mut[u8] = &mut settle.try_borrow_mut_data()?;
+    let (header, _page_table) = mut_array_refs![log_data, size_of::<AccountsHeader>(); .. ;];
+    let settle_header: &mut [AccountsHeader] = cast_slice_mut(header);
+    if settle_header[0].items > 0 {
+        msg!("Attempted to close settlement log with remaining accounts");
+        return Err(error!(ErrorCode::SettlementLogNotEmpty));
+    }
+    if settle_header[0].prev == Pubkey::default() {
+        msg!("Cannot remove first settlement log");
+        return Err(error!(ErrorCode::InvalidAccount));
+    }
+    if settle_header[0].next == Pubkey::default() {
+        msg!("Cannot remove last settlement log");
+        return Err(error!(ErrorCode::InvalidAccount));
+    }
+    let log_prev = accounts.get(0).unwrap().to_account_info();
+    let log_next = accounts.get(1).unwrap().to_account_info();
+    let log_prev_data: &mut[u8] = &mut log_prev.try_borrow_mut_data()?;
+    let log_next_data: &mut[u8] = &mut log_next.try_borrow_mut_data()?;
+    let (prev_header, _page_table) = mut_array_refs![log_prev_data, size_of::<AccountsHeader>(); .. ;];
+    let (next_header, _page_table) = mut_array_refs![log_next_data, size_of::<AccountsHeader>(); .. ;];
+    let settle_prev: &mut [AccountsHeader] = cast_slice_mut(prev_header);
+    let settle_next: &mut [AccountsHeader] = cast_slice_mut(next_header);
+
+    // Validate settlement log chain before removing entry
+    verify_matching_accounts(&settle_header[0].prev, &log_prev.key(), Some(String::from("Previous account does not match")))?;
+    verify_matching_accounts(&settle_header[0].next, &log_next.key(), Some(String::from("Next account does not match")))?;
+    verify_matching_accounts(&settle_prev[0].next, settle.key, Some(String::from("Previous account not linked")))?;
+    verify_matching_accounts(&settle_next[0].prev, settle.key, Some(String::from("Next account not linked")))?;
+
+    settle_prev[0].next = log_next.key();
+    settle_next[0].prev = log_prev.key();
+    if state.settle_a == *settle.key {
+        state.settle_a = log_prev.key();
+    }
+    let log_lamports = settle.lamports();
+    **settle.lamports.borrow_mut() = 0;
+
+    Ok(log_lamports)
+}
+
 fn valid_order(order_type: OrderDT, leaf: &LeafNode, user_key: &Pubkey, sl: &SlabPageAlloc, expired_orders: &mut Vec<u128>, clock_ts: i64) -> bool {
     let order = sl.index::<Order>(order_type as u16, leaf.slot() as usize);
     let valid_expiry: bool = order.expiry == 0 || order.expiry < clock_ts;      // Check expiry timestamp if needed
@@ -796,11 +842,11 @@ pub mod aqua_dex {
             settle_a: *acc_settle1.key,
             settle_b: *acc_settle2.key,
             log_rollover: false,
+            log_deposit_balance: 0,
             action_counter: 0,
             order_counter: 0,
             active_bid: 0,
             active_ask: 0,
-            log_deposit_balance: 0,
             mkt_vault_balance: 0,
             mkt_order_balance: 0,
             mkt_user_balance: 0,
@@ -2495,6 +2541,8 @@ pub mod aqua_dex {
         let (header, page_table) = mut_array_refs![log_data, size_of::<AccountsHeader>(); .. ;];
         let settle_header: &mut [AccountsHeader] = cast_slice_mut(header);
         verify_matching_accounts(&settle_header[0].market, &market.key(), Some(String::from("Invalid market")))?;
+        let close_log: bool = settle_header[0].items == 1 && settle_header[0].prev != Pubkey::default() && settle_header[1].next != Pubkey::default();
+        let offset: usize = if close_log { 2 } else { 0 };
         let sl = SlabPageAlloc::new(page_table);
         let has_item = map_get(sl, DT::Account, owner_id);
         if has_item.is_some() {
@@ -2507,7 +2555,7 @@ pub mod aqua_dex {
                 market_tokens = log_entry.mkt_token_balance();
                 result.set_mkt_tokens(market_tokens);
                 let mint_type = MintType::try_from(market.mkt_mint_type).map_err(|_| ErrorCode::InvalidParameters)?;
-                perform_signed_transfer(ctx.remaining_accounts, signer, mint_type, 0, log_entry.mkt_token_balance(),
+                perform_signed_transfer(ctx.remaining_accounts, signer, mint_type, offset, log_entry.mkt_token_balance(),
                     &ctx.accounts.mkt_vault.to_account_info(),          // From
                     &ctx.accounts.user_mkt_token.to_account_info(),     // To
                     &ctx.accounts.agent.to_account_info(),              // Auth
@@ -2521,7 +2569,7 @@ pub mod aqua_dex {
                 pricing_tokens = log_entry.prc_token_balance();
                 result.set_prc_tokens(pricing_tokens);
                 let mint_type = MintType::try_from(market.prc_mint_type).map_err(|_| ErrorCode::InvalidParameters)?;
-                perform_signed_transfer(ctx.remaining_accounts, signer, mint_type, 0, log_entry.prc_token_balance(),
+                perform_signed_transfer(ctx.remaining_accounts, signer, mint_type, offset, log_entry.prc_token_balance(),
                     &ctx.accounts.prc_vault.to_account_info(),          // From
                     &ctx.accounts.user_prc_token.to_account_info(),     // To
                     &ctx.accounts.agent.to_account_info(),              // Auth
@@ -2540,13 +2588,20 @@ pub mod aqua_dex {
             state.log_deposit_balance = state.log_deposit_balance.checked_sub(market.log_rebate).ok_or(error!(ErrorCode::Overflow))?;
             let mut market_lamports = state.to_account_info().lamports();
             market_lamports = market_lamports.checked_sub(market.log_rebate).ok_or(error!(ErrorCode::Overflow))?;
-            **state.to_account_info().lamports.borrow_mut() = market_lamports;
             let mut user_lamports = ctx.accounts.owner.lamports();
             user_lamports = user_lamports.checked_add(market.log_rebate).ok_or(error!(ErrorCode::Overflow))?;
             **ctx.accounts.owner.lamports.borrow_mut() = user_lamports;
 
             // Write result
             store_struct::<WithdrawResult>(&result, acc_result)?;
+
+            // Close log if necessary
+            if close_log {
+                let log_lamports = log_close(state, acc_settle, ctx.remaining_accounts)?;
+                market_lamports = market_lamports.checked_add(log_lamports).ok_or(error!(ErrorCode::Overflow))?;
+                state.log_deposit_balance = state.log_deposit_balance.checked_add(log_lamports).ok_or(error!(ErrorCode::Overflow))?;
+            }
+            **state.to_account_info().lamports.borrow_mut() = market_lamports;
         } else {
             msg!("Account not found");
             return Err(ErrorCode::AccountNotFound.into());
@@ -2844,6 +2899,8 @@ pub mod aqua_dex {
         let (header, page_table) = mut_array_refs![log_data, size_of::<AccountsHeader>(); .. ;];
         let settle_header: &mut [AccountsHeader] = cast_slice_mut(header);
         verify_matching_accounts(&settle_header[0].market, &market.key(), Some(String::from("Invalid market")))?;
+        let close_log: bool = settle_header[0].items == 1 && settle_header[0].prev != Pubkey::default() && settle_header[1].next != Pubkey::default();
+        let offset: usize = if close_log { 2 } else { 0 };
         let sl = SlabPageAlloc::new(page_table);
         let has_item = map_get(sl, DT::Account, owner_id);
         if has_item.is_some() {
@@ -2856,7 +2913,7 @@ pub mod aqua_dex {
                 market_tokens = log_entry.mkt_token_balance();
                 result.set_mkt_tokens(market_tokens);
                 let mint_type = MintType::try_from(market.mkt_mint_type).map_err(|_| ErrorCode::InvalidParameters)?;
-                perform_signed_transfer(ctx.remaining_accounts, signer, mint_type, 0, log_entry.mkt_token_balance(),
+                perform_signed_transfer(ctx.remaining_accounts, signer, mint_type, offset, log_entry.mkt_token_balance(),
                     &ctx.accounts.mkt_vault.to_account_info(),          // From
                     &ctx.accounts.user_mkt_token.to_account_info(),     // To
                     &ctx.accounts.agent.to_account_info(),              // Auth
@@ -2870,7 +2927,7 @@ pub mod aqua_dex {
                 pricing_tokens = log_entry.prc_token_balance();
                 result.set_prc_tokens(pricing_tokens);
                 let mint_type = MintType::try_from(market.prc_mint_type).map_err(|_| ErrorCode::InvalidParameters)?;
-                perform_signed_transfer(ctx.remaining_accounts, signer, mint_type, 0, log_entry.prc_token_balance(),
+                perform_signed_transfer(ctx.remaining_accounts, signer, mint_type, offset, log_entry.prc_token_balance(),
                     &ctx.accounts.prc_vault.to_account_info(),          // From
                     &ctx.accounts.user_prc_token.to_account_info(),     // To
                     &ctx.accounts.agent.to_account_info(),              // Auth
@@ -2886,6 +2943,15 @@ pub mod aqua_dex {
             AccountEntry::free_index(sl, DT::Account, log_node.slot())?;
             // Write result
             store_struct::<WithdrawResult>(&result, acc_result)?;
+
+            // Close log if necessary
+            if close_log {
+                let log_lamports = log_close(state, acc_settle, ctx.remaining_accounts)?;
+                let mut market_lamports = state.to_account_info().lamports();
+                market_lamports = market_lamports.checked_add(log_lamports).ok_or(error!(ErrorCode::Overflow))?;
+                **state.to_account_info().lamports.borrow_mut() = market_lamports;
+                state.log_deposit_balance = state.log_deposit_balance.checked_add(log_lamports).ok_or(error!(ErrorCode::Overflow))?;
+            }
         } else {
             msg!("Account not found");
             return Err(ErrorCode::AccountNotFound.into());
@@ -3031,6 +3097,7 @@ pub mod aqua_dex {
         let log_data: &mut[u8] = &mut acc_settle.try_borrow_mut_data()?;
         let (header, page_table) = mut_array_refs![log_data, size_of::<AccountsHeader>(); .. ;];
         let settle_header: &mut [AccountsHeader] = cast_slice_mut(header);
+        let close_log: bool = settle_header[0].items == 1 && settle_header[0].prev != Pubkey::default() && settle_header[1].next != Pubkey::default();
         verify_matching_accounts(&settle_header[0].market, &market.key(), Some(String::from("Invalid market")))?;
         let sl = SlabPageAlloc::new(page_table);
         let has_item = map_get(sl, DT::Account, owner_id);
@@ -3053,6 +3120,15 @@ pub mod aqua_dex {
             settle_header[0].items = settle_header[0].items.checked_sub(1).ok_or(error!(ErrorCode::Overflow))?;
             map_remove(sl, DT::Account, log_node.key())?;
             AccountEntry::free_index(sl, DT::Account, log_node.slot())?;
+
+            // Close log if necessary
+            if close_log {
+                let log_lamports = log_close(state, acc_settle, ctx.remaining_accounts)?;
+                let mut market_lamports = state.to_account_info().lamports();
+                market_lamports = market_lamports.checked_add(log_lamports).ok_or(error!(ErrorCode::Overflow))?;
+                **state.to_account_info().lamports.borrow_mut() = market_lamports;
+                state.log_deposit_balance = state.log_deposit_balance.checked_add(log_lamports).ok_or(error!(ErrorCode::Overflow))?;
+            }
         } else {
             msg!("Account not found");
             return Err(ErrorCode::AccountNotFound.into());
@@ -3945,6 +4021,8 @@ pub enum ErrorCode {
     ExternalError,
     #[msg("Settlement log full")]
     SettlementLogFull,
+    #[msg("Settlement log not empty")]
+    SettlementLogNotEmpty,
     #[msg("Orderbook full")]
     OrderbookFull,
     #[msg("Settlement log account does not match market, please update market data and retry")]
