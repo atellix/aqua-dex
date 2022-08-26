@@ -912,6 +912,8 @@ pub mod aqua_dex {
         inp_fill: bool,     // Require orders that are not posted to be filled completely (okd for posted orders)
         inp_expires: i64,   // Unix timestamp for order expiration (must be in the future, must exceed minimum duration)
     ) -> anchor_lang::Result<()> {
+        require!(inp_quantity > 0, ErrorCode::InvalidParameters);
+        require!(inp_price > 0, ErrorCode::InvalidParameters);
         let clock = Clock::get()?;
         let clock_ts = clock.unix_timestamp;
 
@@ -1271,6 +1273,7 @@ pub mod aqua_dex {
             posted_quantity: result.posted_quantity,
             order_price: inp_price,
             order_quantity: inp_quantity,
+            expires: expiry,
         });
 
         Ok(())
@@ -1284,6 +1287,8 @@ pub mod aqua_dex {
         inp_fill: bool,     // Require orders that are not posted to be filled completely
         inp_expires: i64,   // Unix timestamp for order expiration (must be in the future, must exceed minimum duration)
     ) -> anchor_lang::Result<()> {
+        require!(inp_quantity > 0, ErrorCode::InvalidParameters);
+        require!(inp_price > 0, ErrorCode::InvalidParameters);
         let clock = Clock::get()?;
         let clock_ts = clock.unix_timestamp;
 
@@ -1637,6 +1642,7 @@ pub mod aqua_dex {
             posted_quantity: result.posted_quantity,
             order_price: inp_price,
             order_quantity: inp_quantity,
+            expires: expiry,
         });
 
         Ok(())
@@ -1649,6 +1655,11 @@ pub mod aqua_dex {
         inp_net_price: u64,     // Fill until net price is reached
         inp_fill: bool,         // Require orders that are not posted to be filled completely (okd for posted orders)
     ) -> anchor_lang::Result<()> {
+        if inp_by_quantity {
+            require!(inp_quantity > 0, ErrorCode::InvalidParameters);
+        } else {
+            require!(inp_net_price > 0, ErrorCode::InvalidParameters);
+        }
         let clock = Clock::get()?;
         let clock_ts = clock.unix_timestamp;
 
@@ -2012,6 +2023,7 @@ pub mod aqua_dex {
             posted_quantity: 0,
             order_price: inp_net_price,
             order_quantity: inp_quantity,
+            expires: 0,
         });
 
         Ok(())
@@ -2024,6 +2036,11 @@ pub mod aqua_dex {
         inp_net_price: u64,     // Fill until net price is reached
         inp_fill: bool,         // Require orders that are not posted to be filled completely
     ) -> anchor_lang::Result<()> {
+        if inp_by_quantity {
+            require!(inp_quantity > 0, ErrorCode::InvalidParameters);
+        } else {
+            require!(inp_net_price > 0, ErrorCode::InvalidParameters);
+        }
         let clock = Clock::get()?;
         let clock_ts = clock.unix_timestamp;
 
@@ -2331,8 +2348,6 @@ pub mod aqua_dex {
             state_upd.mkt_order_balance,
         );*/
 
-        // TODO: Pay for settlement log space
-
         // Send tokens to the vault
         let mint_type = MintType::try_from(market.mkt_mint_type).map_err(|_| ErrorCode::InvalidParameters)?;
         perform_transfer(ctx.remaining_accounts, mint_type, 0, tokens_filled,
@@ -2394,6 +2409,7 @@ pub mod aqua_dex {
             posted_quantity: result.posted_quantity,
             order_price: inp_net_price,
             order_quantity: inp_quantity,
+            expires: 0,
         });
 
         Ok(())
@@ -2634,7 +2650,6 @@ pub mod aqua_dex {
 
         let market = &ctx.accounts.market;
         let market_state = &ctx.accounts.state;
-
         let acc_user = &ctx.accounts.user.to_account_info();
         let acc_orders = &ctx.accounts.orders.to_account_info();
         let acc_settle1 = &ctx.accounts.settle_a.to_account_info();
@@ -3901,6 +3916,7 @@ pub struct OrderEvent {
     pub posted_quantity: u64,
     pub order_price: u64,
     pub order_quantity: u64,
+    pub expires: i64,
 }
 
 #[event]

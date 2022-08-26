@@ -811,7 +811,7 @@ dependencies = [
  "byte-slice-cast",
  "bytemuck",
  "num_enum",
- "slab-alloc 1.0.0 (git+https://github.com/atellix/slab-alloc?branch=net-authority)",
+ "slab-alloc 1.0.0",
  "solana-program",
  "uuid",
 ]
@@ -1194,7 +1194,6 @@ dependencies = [
 [[package]]
 name = "slab-alloc"
 version = "1.0.0"
-source = "git+https://github.com/atellix/slab-alloc?branch=aqua-dex#ca2bfd0883ce8d4c9fe3f342bbe392774c83e948"
 dependencies = [
  "arrayref",
  "bytemuck",
@@ -1208,7 +1207,7 @@ dependencies = [
 [[package]]
 name = "slab-alloc"
 version = "1.0.0"
-source = "git+https://github.com/atellix/slab-alloc?branch=net-authority#dca3520b6f5d2e9de08416d6655df6477e547f9a"
+source = "git+https://github.com/atellix/slab-alloc?branch=aqua-dex#ca2bfd0883ce8d4c9fe3f342bbe392774c83e948"
 dependencies = [
  "arrayref",
  "bytemuck",
