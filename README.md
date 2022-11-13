@@ -2,7 +2,7 @@
 
 ![alt text](https://atellix.network/images/atellix/aqua_dex_logo.png)
 
-AquaDEX powered by the Infinitrade™ order matching engine
+AquaDEX protocol. A limit orderbook matching engine.
 
 # Decentralized EXchange on Solana
 
@@ -39,14 +39,6 @@ Place an "ask" limit order to sell market tokens at a certain minimum price, or 
 4. post: bool - Post the order order to the orderbook, otherwise it must be filled immediately
 5. fill: bool - Require orders that are not posted to be filled completely (ignored for posted orders)
 6. expires: i64 - Unix timestamp for order expiration (must be in the future, must exceed minimum duration)
-
-#### market_bid
-
-*coming soon*
-
-#### market_ask
-
-*coming soon*
 
 #### cancel_order
 
