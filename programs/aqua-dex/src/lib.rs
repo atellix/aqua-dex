@@ -18,7 +18,7 @@ use slab_alloc::{ SlabPageAlloc, CritMapHeader, CritMap, AnyNode, LeafNode, Slab
 extern crate security_token;
 use security_token::{ cpi::accounts::{ Transfer as AST_Transfer, CreateAccount as AST_CreateAccount } };
 
-declare_id!("2tHqHUPGZZkotRhmQWjvAnQDPvKb9hyuDtVuUp9ZZ6r6");
+declare_id!("CK8Q6SWToxn8NwCxhpU77wviPk9GwXYKQx6NkpgPmi3u");
 
 pub const VERSION_MAJOR: u32 = 1;
 pub const VERSION_MINOR: u32 = 0;
@@ -676,6 +676,8 @@ pub mod aqua_dex {
         inp_mkt_vault_uuid: u128,
         inp_prc_vault_uuid: u128,
     ) -> anchor_lang::Result<()> {
+        msg!("Begin Market Setup");
+
         let acc_market = &ctx.accounts.market.to_account_info();
         let acc_state = &ctx.accounts.state.to_account_info();
         let acc_agent = &ctx.accounts.agent.to_account_info();
@@ -836,6 +838,7 @@ pub mod aqua_dex {
             orders: *acc_orders.key,
             settle_0: *acc_settle1.key,
         };
+        msg!("Atellix: Store Market Data");
         store_struct::<Market>(&market, acc_market)?;
 
         let state = MarketState {
@@ -859,8 +862,10 @@ pub mod aqua_dex {
             last_ts: 0,
             last_price: 0,
         };
+        msg!("Atellix: Store Market State");
         store_struct::<MarketState>(&state, acc_state)?;
 
+        msg!("Atellix: Allocate Orderbook");
         let order_data: &mut[u8] = &mut acc_orders.try_borrow_mut_data()?;
         let order_slab = SlabPageAlloc::new(order_data);
         order_slab.setup_page_table();
@@ -869,6 +874,7 @@ pub mod aqua_dex {
         order_slab.allocate::<SlabVec, Order>(OrderDT::BidOrder as u16, MAX_ORDERS as usize).expect("Failed to allocate");
         order_slab.allocate::<SlabVec, Order>(OrderDT::AskOrder as u16, MAX_ORDERS as usize).expect("Failed to allocate");
 
+        msg!("Atellix: Allocate Settlement Log 1");
         let settle1_data: &mut[u8] = &mut acc_settle1.try_borrow_mut_data()?;
         let (settle1_top, settle1_pages) = mut_array_refs![settle1_data, size_of::<AccountsHeader>(); .. ;];
         let settle1_header: &mut [AccountsHeader] = cast_slice_mut(settle1_top);
@@ -883,6 +889,7 @@ pub mod aqua_dex {
         settle1_slab.allocate::<CritMapHeader, AnyNode>(SettleDT::AccountMap as u16, MAX_ACCOUNTS as usize).expect("Failed to allocate");
         settle1_slab.allocate::<SlabVec, AccountEntry>(SettleDT::Account as u16, MAX_ACCOUNTS as usize).expect("Failed to allocate");
 
+        msg!("Atellix: Allocate Settlement Log 2");
         let settle2_data: &mut[u8] = &mut acc_settle2.try_borrow_mut_data()?;
         let (settle2_top, settle2_pages) = mut_array_refs![settle2_data, size_of::<AccountsHeader>(); .. ;];
         let settle2_header: &mut [AccountsHeader] = cast_slice_mut(settle2_top);
@@ -3387,7 +3394,7 @@ pub struct CreateMarket<'info> {
     /// CHECK: ok
     pub asc_token_prog: AccountInfo<'info>,
     /// CHECK: ok
-    #[account(address = security_token::ID)]
+    #[account(address = security_token::ID)] // TODO: Move this
     pub ast_token_prog: AccountInfo<'info>,
     /// CHECK: ok
     #[account(address = system_program::ID)]
