@@ -562,7 +562,7 @@ fn valid_order(order_type: OrderDT, leaf: &LeafNode, user_key: &Pubkey, sl: &Sla
     let order = sl.index::<Order>(order_type as u16, leaf.slot() as usize);
     let valid_expiry: bool = order.expiry == 0 || order.expiry < clock_ts;      // Check expiry timestamp if needed
     // TODO: Update before release
-    //let valid_user: bool = leaf.owner() != *user_key;                           // Prevent trades between the same account
+    //let valid_user: bool = leaf.owner() != *user_key;                           // Prevent trades between the same user
     let valid_user: bool = true;
     let valid = valid_expiry && valid_user;
     /*msg!("Atellix: Found {} [{}] {} @ {} Exp: {} Key: {} OK: {}",
@@ -670,6 +670,7 @@ pub mod aqua_dex {
         inp_mkt_mint_type: u8,
         inp_prc_mint_type: u8,
         inp_manager_withdraw: bool,
+        inp_manager_cancel: bool,
         inp_expire_enable: bool,
         inp_expire_min: i64,
         inp_taker_fee: u32,
@@ -826,6 +827,7 @@ pub mod aqua_dex {
         let market = Market {
             active: true,
             manager_withdraw: inp_manager_withdraw,
+            manager_cancel: inp_manager_cancel,
             expire_enable: inp_expire_enable,
             expire_min: inp_expire_min,
             log_fee: inp_log_fee,
@@ -974,7 +976,7 @@ pub mod aqua_dex {
         let state_upd = &mut ctx.accounts.state;
         if inp_rollover {
             if !state_upd.log_rollover {
-                // Another market participant already appended an new log account (please retry transaction)
+                // Another market participant already appended a new log account (please retry transaction)
                 msg!("Please update market data and retry");
                 return Err(ErrorCode::RetrySettlementAccount.into());
             }
@@ -1347,7 +1349,7 @@ pub mod aqua_dex {
         let state_upd = &mut ctx.accounts.state;
         if inp_rollover {
             if !state_upd.log_rollover {
-                // Another market participant already appended an new log account (please retry transaction)
+                // Another market participant already appended a new log account (please retry transaction)
                 msg!("Please update market data and retry");
                 return Err(ErrorCode::RetrySettlementAccount.into());
             }
@@ -1712,7 +1714,7 @@ pub mod aqua_dex {
         let state_upd = &mut ctx.accounts.state;
         if inp_rollover {
             if !state_upd.log_rollover {
-                // Another market participant already appended an new log account (please retry transaction)
+                // Another market participant already appended a new log account (please retry transaction)
                 msg!("Please update market data and retry");
                 return Err(ErrorCode::RetrySettlementAccount.into());
             }
@@ -2091,7 +2093,7 @@ pub mod aqua_dex {
         let state_upd = &mut ctx.accounts.state;
         if inp_rollover {
             if !state_upd.log_rollover {
-                // Another market participant already appended an new log account (please retry transaction)
+                // Another market participant already appended a new log account (please retry transaction)
                 msg!("Please update market data and retry");
                 return Err(ErrorCode::RetrySettlementAccount.into());
             }
@@ -2674,7 +2676,7 @@ pub mod aqua_dex {
         let state_upd = &mut ctx.accounts.state;
         if inp_rollover {
             if !state_upd.log_rollover {
-                // Another market participant already appended an new log account (please retry transaction)
+                // Another market participant already appended a new log account (please retry transaction)
                 msg!("Please update market data and retry");
                 return Err(ErrorCode::RetrySettlementAccount.into());
             }
@@ -2758,6 +2760,10 @@ pub mod aqua_dex {
         let acc_settle2 = &ctx.accounts.settle_b.to_account_info();
         let acc_result = &ctx.accounts.result.to_account_info();
 
+        if !market.manager_cancel {
+            msg!("Manager order cancellation disabled");
+            return Err(ErrorCode::AccessDenied.into());
+        }
         if market.manager != *acc_manager.key {
             msg!("Not manager");
             return Err(ErrorCode::AccessDenied.into());
@@ -2778,7 +2784,7 @@ pub mod aqua_dex {
         let state_upd = &mut ctx.accounts.state;
         if inp_rollover {
             if !state_upd.log_rollover {
-                // Another market participant already appended an new log account (please retry transaction)
+                // Another market participant already appended a new log account (please retry transaction)
                 msg!("Please update market data and retry");
                 return Err(ErrorCode::RetrySettlementAccount.into());
             }
@@ -3771,6 +3777,7 @@ pub struct Version<'info> {
 pub struct Market {
     pub active: bool,                   // Active flag
     pub manager_withdraw: bool,         // Allow "manager_withdraw" and "manager_vault_withdraw" to let the market manager withdraw user tokens (FALSE for trustless mode)
+    pub manager_cancel: bool,           // Allow "manager_cancel_order" to let the market manager cancel orders and move user tokens to the settlement log (FALSE for trustless mode)
     pub expire_enable: bool,            // Enable order expiration
     pub expire_min: i64,                // Minimum time an order must be posted before expiration
     pub log_fee: u64,                   // Fee for settlement log space for posted orders (lamports)
