@@ -18,7 +18,7 @@ use slab_alloc::{ SlabPageAlloc, CritMapHeader, CritMap, AnyNode, LeafNode, Slab
 extern crate security_token;
 use security_token::{ cpi::accounts::{ Transfer as AST_Transfer, CreateAccount as AST_CreateAccount } };
 
-declare_id!("CK8Q6SWToxn8NwCxhpU77wviPk9GwXYKQx6NkpgPmi3u");
+declare_id!("AQUAvuZCFUGtSc8uQBaTXfJz3YjMUbinMeXDoDQmZLvX");
 
 pub const VERSION_MAJOR: u32 = 1;
 pub const VERSION_MINOR: u32 = 0;
@@ -585,7 +585,6 @@ fn perform_transfer<'info>(
     to: &AccountInfo<'info>,
     auth: &AccountInfo<'info>,
     spl_prog: &AccountInfo<'info>,
-    ast_prog: &AccountInfo<'info>,
 ) -> anchor_lang::Result<()> {
     if mint_type == MintType::SPLToken {
         let in_accounts = SPL_Transfer {
@@ -597,14 +596,16 @@ fn perform_transfer<'info>(
         token::transfer(in_ctx, amount)?;
         return Ok(());
     } else if mint_type == MintType::AtxSecurityToken {
+        let ast_prog = accounts.get(ast_offset).unwrap().to_account_info();
+        require!(*ast_prog.key == security_token::ID, ErrorCode::InvalidParameters);
         let in_accounts = AST_Transfer {
             from: from.clone(),
-            from_auth: accounts.get(ast_offset).unwrap().to_account_info(),
+            from_auth: accounts.get(ast_offset + 1).unwrap().to_account_info(),
             to: to.clone(),
-            to_auth: accounts.get(ast_offset + 1).unwrap().to_account_info(),
+            to_auth: accounts.get(ast_offset + 2).unwrap().to_account_info(),
             user: auth.clone(),
         };
-        let in_ctx = CpiContext::new(ast_prog.clone(), in_accounts);
+        let in_ctx = CpiContext::new(ast_prog, in_accounts);
         security_token::cpi::transfer(in_ctx, amount)?;
         return Ok(());
     }
@@ -621,7 +622,6 @@ fn perform_signed_transfer<'info>(
     to: &AccountInfo<'info>,
     auth: &AccountInfo<'info>,
     spl_prog: &AccountInfo<'info>,
-    ast_prog: &AccountInfo<'info>,
 ) -> anchor_lang::Result<()> {
     if mint_type == MintType::SPLToken {
         let in_accounts = SPL_Transfer {
@@ -633,14 +633,16 @@ fn perform_signed_transfer<'info>(
         token::transfer(in_ctx, amount)?;
         return Ok(());
     } else if mint_type == MintType::AtxSecurityToken {
+        let ast_prog = accounts.get(ast_offset).unwrap().to_account_info();
+        require!(*ast_prog.key == security_token::ID, ErrorCode::InvalidParameters);
         let in_accounts = AST_Transfer {
             from: from.clone(),
-            from_auth: accounts.get(ast_offset).unwrap().to_account_info(),
+            from_auth: accounts.get(ast_offset + 1).unwrap().to_account_info(),
             to: to.clone(),
-            to_auth: accounts.get(ast_offset + 1).unwrap().to_account_info(),
+            to_auth: accounts.get(ast_offset + 2).unwrap().to_account_info(),
             user: auth.clone(),
         };
-        let in_ctx = CpiContext::new_with_signer(ast_prog.clone(), in_accounts, signer);
+        let in_ctx = CpiContext::new_with_signer(ast_prog, in_accounts, signer);
         security_token::cpi::transfer(in_ctx, amount)?;
         return Ok(());
     }
@@ -667,6 +669,7 @@ pub mod aqua_dex {
         inp_prc_decimals: u8,
         inp_mkt_mint_type: u8,
         inp_prc_mint_type: u8,
+        inp_manager_withdraw: bool,
         inp_expire_enable: bool,
         inp_expire_min: i64,
         inp_taker_fee: u32,
@@ -689,6 +692,11 @@ pub mod aqua_dex {
 
         let mkt_mint_type: MintType = MintType::try_from(inp_mkt_mint_type).map_err(|_| ErrorCode::InvalidParameters)?;
         let prc_mint_type: MintType = MintType::try_from(inp_prc_mint_type).map_err(|_| ErrorCode::InvalidParameters)?;
+
+        if mkt_mint_type == MintType::AtxSecurityToken || prc_mint_type == MintType::AtxSecurityToken {
+            let acc_ast = ctx.remaining_accounts.get(0).unwrap().to_account_info();
+            require!(*acc_ast.key == security_token::ID, ErrorCode::InvalidParameters);
+        }
 
         if mkt_mint_type == MintType::SPLToken {
             // Verify associated token (market)
@@ -760,7 +768,8 @@ pub mod aqua_dex {
                 close_auth: acc_agent.clone(),
                 system_program: acc_sys.clone(),
             };
-            let in_ctx = CpiContext::new_with_signer(ctx.accounts.ast_token_prog.to_account_info(), in_accounts, signer);
+            let acc_ast = ctx.remaining_accounts.get(0).unwrap().to_account_info();
+            let in_ctx = CpiContext::new_with_signer(acc_ast, in_accounts, signer);
             security_token::cpi::create_account(in_ctx, inp_mkt_vault_uuid)?;
         }
 
@@ -805,7 +814,8 @@ pub mod aqua_dex {
                 close_auth: acc_agent.clone(),
                 system_program: acc_sys.clone(),
             };
-            let in_ctx = CpiContext::new_with_signer(ctx.accounts.ast_token_prog.to_account_info(), in_accounts, signer);
+            let acc_ast = ctx.remaining_accounts.get(0).unwrap().to_account_info();
+            let in_ctx = CpiContext::new_with_signer(acc_ast, in_accounts, signer);
             security_token::cpi::create_account(in_ctx, inp_prc_vault_uuid)?;
         }
 
@@ -815,6 +825,7 @@ pub mod aqua_dex {
 
         let market = Market {
             active: true,
+            manager_withdraw: inp_manager_withdraw,
             expire_enable: inp_expire_enable,
             expire_min: inp_expire_min,
             log_fee: inp_log_fee,
@@ -1234,7 +1245,6 @@ pub mod aqua_dex {
             &ctx.accounts.prc_vault.to_account_info(),       // To
             &ctx.accounts.user.to_account_info(),            // Auth
             &ctx.accounts.spl_token_prog.to_account_info(),  // SPL Token Program
-            &ctx.accounts.ast_token_prog.to_account_info(),  // AST Token Program
         )?;
         result.set_tokens_sent(total_cost);
 
@@ -1257,7 +1267,6 @@ pub mod aqua_dex {
                 &ctx.accounts.user_mkt_token.to_account_info(),     // To
                 &ctx.accounts.agent.to_account_info(),              // Auth
                 &ctx.accounts.spl_token_prog.to_account_info(),     // SPL Token Program
-                &ctx.accounts.ast_token_prog.to_account_info(),     // AST Token Program
             )?;
         }
         store_struct::<TradeResult>(&result, acc_result)?;
@@ -1595,7 +1604,6 @@ pub mod aqua_dex {
             &ctx.accounts.mkt_vault.to_account_info(),       // To
             &ctx.accounts.user.to_account_info(),            // Auth
             &ctx.accounts.spl_token_prog.to_account_info(),  // SPL Token Program
-            &ctx.accounts.ast_token_prog.to_account_info(),  // AST Token Program
         )?;
 
         if tokens_filled > 0 {
@@ -1625,7 +1633,6 @@ pub mod aqua_dex {
                 &ctx.accounts.user_prc_token.to_account_info(),     // To
                 &ctx.accounts.agent.to_account_info(),              // Auth
                 &ctx.accounts.spl_token_prog.to_account_info(),     // SPL Token Program
-                &ctx.accounts.ast_token_prog.to_account_info(),     // AST Token Program
             )?;
             result.set_tokens_received(tokens_received);
         }
@@ -1984,7 +1991,6 @@ pub mod aqua_dex {
             &ctx.accounts.prc_vault.to_account_info(),       // To
             &ctx.accounts.user.to_account_info(),            // Auth
             &ctx.accounts.spl_token_prog.to_account_info(),  // SPL Token Program
-            &ctx.accounts.ast_token_prog.to_account_info(),  // AST Token Program
         )?;
         result.set_tokens_sent(tokens_paid);
 
@@ -2007,7 +2013,6 @@ pub mod aqua_dex {
                 &ctx.accounts.user_mkt_token.to_account_info(),     // To
                 &ctx.accounts.agent.to_account_info(),              // Auth
                 &ctx.accounts.spl_token_prog.to_account_info(),     // SPL Token Program
-                &ctx.accounts.ast_token_prog.to_account_info(),     // AST Token Program
             )?;
         }
         store_struct::<TradeResult>(&result, acc_result)?;
@@ -2362,7 +2367,6 @@ pub mod aqua_dex {
             &ctx.accounts.mkt_vault.to_account_info(),       // To
             &ctx.accounts.user.to_account_info(),            // Auth
             &ctx.accounts.spl_token_prog.to_account_info(),  // SPL Token Program
-            &ctx.accounts.ast_token_prog.to_account_info(),  // AST Token Program
         )?;
 
         if tokens_filled > 0 {
@@ -2392,7 +2396,6 @@ pub mod aqua_dex {
                 &ctx.accounts.user_prc_token.to_account_info(),     // To
                 &ctx.accounts.agent.to_account_info(),              // Auth
                 &ctx.accounts.spl_token_prog.to_account_info(),     // SPL Token Program
-                &ctx.accounts.ast_token_prog.to_account_info(),     // AST Token Program
             )?;
             result.set_tokens_received(tokens_received);
         }
@@ -2504,7 +2507,6 @@ pub mod aqua_dex {
                 &ctx.accounts.user_prc_token.to_account_info(),     // To
                 &ctx.accounts.agent.to_account_info(),              // Auth
                 &ctx.accounts.spl_token_prog.to_account_info(),     // SPL Token Program
-                &ctx.accounts.ast_token_prog.to_account_info(),     // AST Token Program
             )?;
         } else if side == Side::Ask {
             let mint_type = MintType::try_from(market.mkt_mint_type).map_err(|_| ErrorCode::InvalidParameters)?;
@@ -2513,7 +2515,6 @@ pub mod aqua_dex {
                 &ctx.accounts.user_mkt_token.to_account_info(),     // To
                 &ctx.accounts.agent.to_account_info(),              // Auth
                 &ctx.accounts.spl_token_prog.to_account_info(),     // SPL Token Program
-                &ctx.accounts.ast_token_prog.to_account_info(),     // AST Token Program
             )?;
         }
         store_struct::<WithdrawResult>(&result, acc_result)?;
@@ -2583,7 +2584,6 @@ pub mod aqua_dex {
                     &ctx.accounts.user_mkt_token.to_account_info(),     // To
                     &ctx.accounts.agent.to_account_info(),              // Auth
                     &ctx.accounts.spl_token_prog.to_account_info(),     // SPL Token Program
-                    &ctx.accounts.ast_token_prog.to_account_info(),     // AST Token Program
                 )?;
                 state.mkt_log_balance = state.mkt_log_balance.checked_sub(market_tokens).ok_or(error!(ErrorCode::Overflow))?;
                 state.mkt_vault_balance = state.mkt_vault_balance.checked_sub(market_tokens).ok_or(error!(ErrorCode::Overflow))?;
@@ -2597,7 +2597,6 @@ pub mod aqua_dex {
                     &ctx.accounts.user_prc_token.to_account_info(),     // To
                     &ctx.accounts.agent.to_account_info(),              // Auth
                     &ctx.accounts.spl_token_prog.to_account_info(),     // SPL Token Program
-                    &ctx.accounts.ast_token_prog.to_account_info(),     // AST Token Program
                 )?;
                 state.prc_log_balance = state.prc_log_balance.checked_sub(pricing_tokens).ok_or(error!(ErrorCode::Overflow))?;
                 state.prc_vault_balance = state.prc_vault_balance.checked_sub(pricing_tokens).ok_or(error!(ErrorCode::Overflow))?;
@@ -2865,7 +2864,7 @@ pub mod aqua_dex {
 
         let s2 = verify_matching_accounts(&market_state.settle_b, &acc_settle.key, Some(String::from("Settlement log 2")));
         if s2.is_err() {
-            // This is expected to happen sometimes due to a race condition between settlment log rollovers and new orders
+            // This is expected to happen sometimes due to a race condition between settlement log rollovers and new orders
             // Reload the current "market" account with the latest settlement log accounts and retry the transaction
             msg!("Please update market data and retry");
             return Err(ErrorCode::RetrySettlementAccount.into());
@@ -2874,7 +2873,7 @@ pub mod aqua_dex {
         // Append a settlement log account
         let state_upd = &mut ctx.accounts.state;
         if !state_upd.log_rollover {
-            // Another market participant already appended an new log account (please retry transaction)
+            // Another market participant already appended a new log account (please retry transaction)
             msg!("Please update market data and retry");
             return Err(ErrorCode::RetrySettlementAccount.into());
         }
@@ -2903,6 +2902,10 @@ pub mod aqua_dex {
         let acc_result = &ctx.accounts.result.to_account_info();
 
         // Verify 
+        if !market.manager_withdraw {
+            msg!("Manager withdrawals disabled");
+            return Err(ErrorCode::AccessDenied.into());
+        }
         if market.manager != *acc_manager.key {
             msg!("Not manager");
             return Err(ErrorCode::AccessDenied.into());
@@ -2940,7 +2943,6 @@ pub mod aqua_dex {
                     &ctx.accounts.user_mkt_token.to_account_info(),     // To
                     &ctx.accounts.agent.to_account_info(),              // Auth
                     &ctx.accounts.spl_token_prog.to_account_info(),     // SPL Token Program
-                    &ctx.accounts.ast_token_prog.to_account_info(),     // AST Token Program
                 )?;
                 state.mkt_log_balance = state.mkt_log_balance.checked_sub(market_tokens).ok_or(error!(ErrorCode::Overflow))?;
                 state.mkt_vault_balance = state.mkt_vault_balance.checked_sub(market_tokens).ok_or(error!(ErrorCode::Overflow))?;
@@ -2954,7 +2956,6 @@ pub mod aqua_dex {
                     &ctx.accounts.user_prc_token.to_account_info(),     // To
                     &ctx.accounts.agent.to_account_info(),              // Auth
                     &ctx.accounts.spl_token_prog.to_account_info(),     // SPL Token Program
-                    &ctx.accounts.ast_token_prog.to_account_info(),     // AST Token Program
                 )?;
                 state.prc_log_balance = state.prc_log_balance.checked_sub(pricing_tokens).ok_or(error!(ErrorCode::Overflow))?;
                 state.prc_vault_balance = state.prc_vault_balance.checked_sub(pricing_tokens).ok_or(error!(ErrorCode::Overflow))?;
@@ -3098,6 +3099,12 @@ pub mod aqua_dex {
     }
  
     // Move tokens from the settlement log to a user's individual vault (manager only)
+    // This is optional market "housekeeping". If a market manager moves balances from the settlement logs to user vaults before the
+    // 1st settlement log file fills up then there will never be a need to rollover settlement logs and possibly require repeating trade transactions.
+    // If markets opt out of this housekeeping then the settlement log will grow if more and more users leave settled trades in the logs.
+    // Traders will need to keep their "Market Data" account up-to-date as settlement log rollovers occur unless managers do housekeeping.
+    // Resending trades is automated in the API frontend but requires possibly resending transactions. (Based on "RetrySettlementAccount" error.)
+    // Keeping open slots in the 1st settlement log enables all trades to be processed immediately without any need of a possible data refresh.
     pub fn vault_deposit<'a, 'b, 'c, 'info>(ctx: Context<'a, 'b, 'c, 'info, VaultDeposit<'info>>) -> anchor_lang::Result<()> {
         let market = &ctx.accounts.market;
         let state = &mut ctx.accounts.state;
@@ -3211,7 +3218,6 @@ pub mod aqua_dex {
                     &ctx.accounts.user_mkt_token.to_account_info(),     // To
                     &ctx.accounts.agent.to_account_info(),              // Auth
                     &ctx.accounts.spl_token_prog.to_account_info(),     // SPL Token Program
-                    &ctx.accounts.ast_token_prog.to_account_info(),     // AST Token Program
                 )?;
                 vault.mkt_tokens = 0;
                 state.mkt_vault_balance = state.mkt_vault_balance.checked_sub(market_tokens).ok_or(error!(ErrorCode::Overflow))?;
@@ -3225,7 +3231,6 @@ pub mod aqua_dex {
                     &ctx.accounts.user_prc_token.to_account_info(),     // To
                     &ctx.accounts.agent.to_account_info(),              // Auth
                     &ctx.accounts.spl_token_prog.to_account_info(),     // SPL Token Program
-                    &ctx.accounts.ast_token_prog.to_account_info(),     // AST Token Program
                 )?;
                 vault.prc_tokens = 0;
                 state.prc_vault_balance = state.prc_vault_balance.checked_sub(pricing_tokens).ok_or(error!(ErrorCode::Overflow))?;
@@ -3263,6 +3268,10 @@ pub mod aqua_dex {
         let acc_prc_vault = &ctx.accounts.prc_vault.to_account_info();
 
         // Verify 
+        if !market.manager_withdraw {
+            msg!("Manager withdrawals disabled");
+            return Err(ErrorCode::AccessDenied.into());
+        }
         if market.manager != *acc_manager.key {
             msg!("Not owner");
             return Err(ErrorCode::AccessDenied.into());
@@ -3287,7 +3296,6 @@ pub mod aqua_dex {
                     &ctx.accounts.user_mkt_token.to_account_info(),     // To
                     &ctx.accounts.agent.to_account_info(),              // Auth
                     &ctx.accounts.spl_token_prog.to_account_info(),     // SPL Token Program
-                    &ctx.accounts.ast_token_prog.to_account_info(),     // AST Token Program
                 )?;
                 vault.mkt_tokens = 0;
                 state.mkt_vault_balance = state.mkt_vault_balance.checked_sub(market_tokens).ok_or(error!(ErrorCode::Overflow))?;
@@ -3301,7 +3309,6 @@ pub mod aqua_dex {
                     &ctx.accounts.user_prc_token.to_account_info(),     // To
                     &ctx.accounts.agent.to_account_info(),              // Auth
                     &ctx.accounts.spl_token_prog.to_account_info(),     // SPL Token Program
-                    &ctx.accounts.ast_token_prog.to_account_info(),     // AST Token Program
                 )?;
                 vault.prc_tokens = 0;
                 state.prc_vault_balance = state.prc_vault_balance.checked_sub(pricing_tokens).ok_or(error!(ErrorCode::Overflow))?;
@@ -3394,9 +3401,6 @@ pub struct CreateMarket<'info> {
     /// CHECK: ok
     pub asc_token_prog: AccountInfo<'info>,
     /// CHECK: ok
-    #[account(address = security_token::ID)] // TODO: Move this
-    pub ast_token_prog: AccountInfo<'info>,
-    /// CHECK: ok
     #[account(address = system_program::ID)]
     pub system_program: AccountInfo<'info>,
     /// CHECK: ok
@@ -3441,9 +3445,6 @@ pub struct OrderContext<'info> {
     /// CHECK: ok
     #[account(address = token::ID)]
     pub spl_token_prog: AccountInfo<'info>,
-    /// CHECK: ok
-    #[account(address = security_token::ID)]
-    pub ast_token_prog: AccountInfo<'info>,
 }
 
 #[derive(Accounts)]
@@ -3477,9 +3478,6 @@ pub struct CancelOrder<'info> {
     /// CHECK: ok
     #[account(address = token::ID)]
     pub spl_token_prog: AccountInfo<'info>,
-    /// CHECK: ok
-    #[account(address = security_token::ID)]
-    pub ast_token_prog: AccountInfo<'info>,
 }
 
 #[derive(Accounts)]
@@ -3554,9 +3552,6 @@ pub struct Withdraw<'info> {
     /// CHECK: ok
     #[account(address = token::ID)]
     pub spl_token_prog: AccountInfo<'info>,
-    /// CHECK: ok
-    #[account(address = security_token::ID)]
-    pub ast_token_prog: AccountInfo<'info>,
 }
 
 #[derive(Accounts)]
@@ -3592,9 +3587,6 @@ pub struct ManagerWithdraw<'info> {
     /// CHECK: ok
     #[account(address = token::ID)]
     pub spl_token_prog: AccountInfo<'info>,
-    /// CHECK: ok
-    #[account(address = security_token::ID)]
-    pub ast_token_prog: AccountInfo<'info>,
 }
 
 #[derive(Accounts)]
@@ -3665,9 +3657,6 @@ pub struct VaultWithdraw<'info> {
     /// CHECK: ok
     #[account(address = token::ID)]
     pub spl_token_prog: AccountInfo<'info>,
-    /// CHECK: ok
-    #[account(address = security_token::ID)]
-    pub ast_token_prog: AccountInfo<'info>,
 }
 
 #[derive(Accounts)]
@@ -3721,9 +3710,6 @@ pub struct ManagerVaultWithdraw<'info> {
     /// CHECK: ok
     #[account(address = token::ID)]
     pub spl_token_prog: AccountInfo<'info>,
-    /// CHECK: ok
-    #[account(address = security_token::ID)]
-    pub ast_token_prog: AccountInfo<'info>,
 }
 
 #[derive(Accounts)]
@@ -3784,6 +3770,7 @@ pub struct Version<'info> {
 #[account]
 pub struct Market {
     pub active: bool,                   // Active flag
+    pub manager_withdraw: bool,         // Allow "manager_withdraw" and "manager_vault_withdraw" to let the market manager withdraw user tokens (FALSE for trustless mode)
     pub expire_enable: bool,            // Enable order expiration
     pub expire_min: i64,                // Minimum time an order must be posted before expiration
     pub log_fee: u64,                   // Fee for settlement log space for posted orders (lamports)

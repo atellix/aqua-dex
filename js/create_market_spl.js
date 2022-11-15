@@ -83,8 +83,6 @@ async function main() {
     const accountId1 = uuidv4()
     const accountBuf1 = Buffer.from(uuidparse(accountId1).reverse())
 
-    const securityTokenPK = new PublicKey('8JxtmFxuhmgoEFmBeZAqBVouj6DDQBwybpJnpqcYUU8M')
-
     const marketAgent = await programAddress([marketPK.toBuffer()], aquadexPK)
     const marketAgentPK = new PublicKey(marketAgent.pubkey)
     const tokenVault1 = await associatedTokenAddress(marketAgentPK, tokenMint1)
@@ -152,7 +150,6 @@ async function main() {
         settleB: settle2.publicKey.toString(),
         splTokenProg: TOKEN_PROGRAM_ID.toString(),
         ascTokenProg: SPL_ASSOCIATED_TOKEN.toString(),
-        astTokenProg: securityTokenPK.toString(),
         sysProg: SystemProgram.programId.toString(),
         sysRent: SYSVAR_RENT_PUBKEY.toString(),
     })
@@ -164,6 +161,7 @@ async function main() {
         6,
         0,                                      // Mkt Mint Type - 0: SPL, 1: AST
         0,                                      // Prc Mint Type 
+        false,                                  // Manager withdrawals (FALSE for trustless mode)
         true,                                   // Expire enable
         new anchor.BN(1),                       // Min expire
         new anchor.BN(0),                       // Taker fee (X / 10,000,000)
@@ -187,7 +185,6 @@ async function main() {
                 settleB: settle2.publicKey,
                 splTokenProg: TOKEN_PROGRAM_ID,
                 ascTokenProg: SPL_ASSOCIATED_TOKEN,
-                astTokenProg: securityTokenPK,
                 systemProgram: SystemProgram.programId,
                 systemRent: SYSVAR_RENT_PUBKEY,
             },
