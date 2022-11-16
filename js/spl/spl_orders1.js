@@ -71,10 +71,10 @@ function decodeOrderId(orderId) {
 
 function formatOrder(order) {
     var res = {
-        tokensFilled: order.tokensFilled.toString(),
-        tokensPosted: order.tokensPosted.toString(),
-        tokensDeposited: order.tokensDeposited.toString(),
+        tokensReceived: order.tokensReceived.toString(),
+        tokensSent: order.tokensSent.toString(),
         tokensFee: order.tokensFee.toString(),
+        postedQuantity: order.postedQuantity.toString(),
         orderId: encodeOrderId(order.orderId),
     }
     return res
@@ -96,7 +96,7 @@ async function createTokenMint() {
 async function main() {
     var ndjs
     try {
-        ndjs = await fs.readFile('market.json')
+        ndjs = await fs.readFile('market_wsol_usdc_1.json')
     } catch (error) {
         console.error('File Error: ', error)
     }
@@ -131,40 +131,64 @@ async function main() {
     //res = await aquadex.account.market.fetch(marketPK)
     //console.log(res)
 
-    const resultData1 = anchor.web3.Keypair.generate()
-    const resultData2 = anchor.web3.Keypair.generate()
-    const tx = new anchor.web3.Transaction()
-    tx.add(
-        anchor.web3.SystemProgram.createAccount({
-            fromPubkey: provider.wallet.publicKey,
-            newAccountPubkey: resultData1.publicKey,
-            space: tradeResultBytes,
-            lamports: tradeResultRent,
-            programId: aquadexPK
-        })
-    )
-    tx.add(
-        anchor.web3.SystemProgram.createAccount({
-            fromPubkey: provider.wallet.publicKey,
-            newAccountPubkey: resultData2.publicKey,
-            space: withdrawResultBytes,
-            lamports: withdrawResultRent,
-            programId: aquadexPK
-        })
-    )
-    await provider.sendAndConfirm(tx, [resultData1, resultData2])
+    var resultAccounts = {}
+    var resultData1
+    var resultData2
+    if (false) {
+        console.log("Create Result Accounts")
+        resultData1 = anchor.web3.Keypair.generate()
+        resultData2 = anchor.web3.Keypair.generate()
+        const tx = new anchor.web3.Transaction()
+        tx.add(
+            anchor.web3.SystemProgram.createAccount({
+                fromPubkey: provider.wallet.publicKey,
+                newAccountPubkey: resultData1.publicKey,
+                space: tradeResultBytes,
+                lamports: tradeResultRent,
+                programId: aquadexPK
+            })
+        )
+        tx.add(
+            anchor.web3.SystemProgram.createAccount({
+                fromPubkey: provider.wallet.publicKey,
+                newAccountPubkey: resultData2.publicKey,
+                space: withdrawResultBytes,
+                lamports: withdrawResultRent,
+                programId: aquadexPK
+            })
+        )
+        await provider.sendAndConfirm(tx, [resultData1, resultData2])
+        try {
+            await fs.writeFile('result_accts_1.json', JSON.stringify({
+                'TradeResult': exportSecretKey(resultData1),
+                'WithdrawResult': exportSecretKey(resultData2),
+            }, null, 4))
+        } catch (error) {
+            console.log("File Error: " + error)
+        }
+    } else {
+        var rsjs
+        try {
+            rsjs = await fs.readFile('result_accts_1.json')
+        } catch (error) {
+            console.error('File Error: ', error)
+        }
+        resultAccounts = JSON.parse(rsjs.toString())
+        resultData1 = importSecretKey(resultAccounts['TradeResult'])
+        resultData2 = importSecretKey(resultAccounts['WithdrawResult'])
+    }
 
     var order1
 
-    if (true) {
+    if (false) {
         console.log('Limit Ask 1')
         console.log(await aquadex.rpc.limitAsk(
-            false,
-            new anchor.BN(100 * 1000000),    // Quantity
-            new anchor.BN(2.5 * 1000000),    // Price
+            new anchor.BN(1 * (10**9)),    // Quantity
+            new anchor.BN(14.62 * (10**6)),  // Price
             true,                            // Post
             false,                           // Fill
             new anchor.BN(0),                // Order expiry
+            false,                           // Settlement Log Rollover
             {
                 accounts: {
                     market: marketPK,
@@ -180,12 +204,7 @@ async function main() {
                     settleB: settle2PK,
                     result: resultData1.publicKey,
                     splTokenProg: TOKEN_PROGRAM_ID,
-                    astTokenProg: securityTokenPK,
                 },
-                remainingAccounts: [
-                    { pubkey: new PublicKey('3uGbEYywK2Lz1dPJtzXmEyDbTiDUoKcGqBAsEs5cpxgY'), isWritable: false, isSigner: false }, // From: User auth
-                    { pubkey: new PublicKey('BXmUTAeeLuWHjy3crDho1YvAvje2NrJwcqnwnkDZMmDb'), isWritable: false, isSigner: false }, // To: Market auth
-                ],
                 signers: [resultData1],
             }
         ))
@@ -196,8 +215,8 @@ async function main() {
 
     if (true) {
         console.log('Cancel Order 1')
-        //var orderId = decodeOrderId('00000003em1800000000000010')
-        var orderId = order1
+        var orderId = decodeOrderId('00000000vwap00000000000008')
+        //var orderId = order1
         console.log(await aquadex.rpc.cancelOrder(
             1, // 0 - Bid, 1 - Ask
             orderId,
@@ -206,7 +225,7 @@ async function main() {
                     market: marketPK,
                     state: marketStatePK,
                     agent: new PublicKey(marketAgent.pubkey),
-                    user: provider.wallet.publicKey,
+                    owner: provider.wallet.publicKey,
                     userMktToken: new PublicKey(userToken1.pubkey),
                     userPrcToken: new PublicKey(userToken2.pubkey),
                     mktVault: new PublicKey(tokenVault1.pubkey),
@@ -214,13 +233,8 @@ async function main() {
                     orders: ordersPK,
                     result: resultData2.publicKey,
                     splTokenProg: TOKEN_PROGRAM_ID,
-                    astTokenProg: securityTokenPK,
                 },
                 signers: [resultData2],
-                remainingAccounts: [
-                    { pubkey: new PublicKey('BXmUTAeeLuWHjy3crDho1YvAvje2NrJwcqnwnkDZMmDb'), isWritable: false, isSigner: false }, // From: Market auth
-                    { pubkey: new PublicKey('3uGbEYywK2Lz1dPJtzXmEyDbTiDUoKcGqBAsEs5cpxgY'), isWritable: false, isSigner: false }, // To: User auth
-                ],
             }
         ))
         res = await aquadex.account.withdrawResult.fetch(resultData2.publicKey)
@@ -235,6 +249,7 @@ async function main() {
             true,
             false,
             new anchor.BN(0),           // Order expiry
+            false,
             {
                 accounts: {
                     market: marketPK,
@@ -262,12 +277,12 @@ async function main() {
     if (false) {
         console.log('Limit Bid')
         console.log(await aquadex.rpc.limitBid(
-            false,
             new anchor.BN(25 * 1000000),        // Quantity
             new anchor.BN(2.5 * 1000000),       // Price
             true,                       // Post order
             false,                      // Require filled if not posted
             new anchor.BN(0),           // Order expiry
+            false,                      // Log rollover
             {
                 accounts: {
                     market: marketPK,
@@ -283,13 +298,8 @@ async function main() {
                     settleB: settle2PK,
                     result: resultData1.publicKey,
                     splTokenProg: TOKEN_PROGRAM_ID,
-                    astTokenProg: securityTokenPK,
                 },
                 signers: [resultData1],
-                remainingAccounts: [
-                    { pubkey: new PublicKey('BXmUTAeeLuWHjy3crDho1YvAvje2NrJwcqnwnkDZMmDb'), isWritable: false, isSigner: false }, // From: Market auth
-                    { pubkey: new PublicKey('3uGbEYywK2Lz1dPJtzXmEyDbTiDUoKcGqBAsEs5cpxgY'), isWritable: false, isSigner: false }, // To: User auth
-                ],
             }
         ))
         res = await aquadex.account.tradeResult.fetch(resultData1.publicKey)

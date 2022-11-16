@@ -162,6 +162,7 @@ async function main() {
         0,                                      // Mkt Mint Type - 0: SPL, 1: AST
         0,                                      // Prc Mint Type 
         false,                                  // Manager withdrawals (FALSE for trustless mode)
+        false,                                  // Manager order cancel (FALSE for trustless mode)
         true,                                   // Expire enable
         new anchor.BN(1),                       // Min expire
         new anchor.BN(0),                       // Taker fee (X / 10,000,000)

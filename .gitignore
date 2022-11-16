@@ -5,7 +5,9 @@ target
 js/node_modules/*
 *.swp
 *.swo
-js/market.json
+js/market*.json
 js/users.json
-js/users/*.yml
-js/users/*.json
+js/users/*
+js/spl/market*.json
+js/spl/user_data/*
+

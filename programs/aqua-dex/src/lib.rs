@@ -562,8 +562,7 @@ fn valid_order(order_type: OrderDT, leaf: &LeafNode, user_key: &Pubkey, sl: &Sla
     let order = sl.index::<Order>(order_type as u16, leaf.slot() as usize);
     let valid_expiry: bool = order.expiry == 0 || order.expiry < clock_ts;      // Check expiry timestamp if needed
     // TODO: Update before release
-    //let valid_user: bool = leaf.owner() != *user_key;                           // Prevent trades between the same user
-    let valid_user: bool = true;
+    let valid_user: bool = leaf.owner() != *user_key;                           // Prevent trades between the same user
     let valid = valid_expiry && valid_user;
     /*msg!("Atellix: Found {} [{}] {} @ {} Exp: {} Key: {} OK: {}",
         match order_type { OrderDT::BidOrder => "Bid", OrderDT::AskOrder => "Ask", _ => unreachable!() },
@@ -925,12 +924,12 @@ pub mod aqua_dex {
     }
 
     pub fn limit_bid<'a, 'b, 'c, 'info>(ctx: Context<'a, 'b, 'c, 'info, OrderContext<'info>>,
-        inp_rollover: bool, // Perform settlement log rollover
         inp_quantity: u64,
         inp_price: u64,
         inp_post: bool,     // Post the order order to the orderbook, otherwise it must be filled immediately
         inp_fill: bool,     // Require orders that are not posted to be filled completely (okd for posted orders)
         inp_expires: i64,   // Unix timestamp for order expiration (must be in the future, must exceed minimum duration)
+        inp_rollover: bool, // Perform settlement log rollover
     ) -> anchor_lang::Result<()> {
         require!(inp_quantity > 0, ErrorCode::InvalidParameters);
         require!(inp_price > 0, ErrorCode::InvalidParameters);
@@ -1271,7 +1270,9 @@ pub mod aqua_dex {
                 &ctx.accounts.spl_token_prog.to_account_info(),     // SPL Token Program
             )?;
         }
-        store_struct::<TradeResult>(&result, acc_result)?;
+        if *acc_result.key != system_program::ID {
+            store_struct::<TradeResult>(&result, acc_result)?;
+        }
 
         msg!("atellix-log");
         emit!(OrderEvent {
@@ -1298,12 +1299,12 @@ pub mod aqua_dex {
     }
 
     pub fn limit_ask<'a, 'b, 'c, 'info>(ctx: Context<'a, 'b, 'c, 'info, OrderContext<'info>>,
-        inp_rollover: bool, // Perform settlement log rollover
         inp_quantity: u64,
         inp_price: u64,
         inp_post: bool,     // Post the order order to the orderbook, otherwise it must be filled immediately
         inp_fill: bool,     // Require orders that are not posted to be filled completely
         inp_expires: i64,   // Unix timestamp for order expiration (must be in the future, must exceed minimum duration)
+        inp_rollover: bool, // Perform settlement log rollover
     ) -> anchor_lang::Result<()> {
         require!(inp_quantity > 0, ErrorCode::InvalidParameters);
         require!(inp_price > 0, ErrorCode::InvalidParameters);
@@ -1638,7 +1639,9 @@ pub mod aqua_dex {
             )?;
             result.set_tokens_received(tokens_received);
         }
-        store_struct::<TradeResult>(&result, acc_result)?;
+        if *acc_result.key != system_program::ID {
+            store_struct::<TradeResult>(&result, acc_result)?;
+        }
 
         msg!("atellix-log");
         emit!(OrderEvent {
@@ -1665,11 +1668,11 @@ pub mod aqua_dex {
     }
 
     pub fn market_bid<'a, 'b, 'c, 'info>(ctx: Context<'a, 'b, 'c, 'info, OrderContext<'info>>,
-        inp_rollover: bool,     // Perform settlement log rollover
         inp_by_quantity: bool,  // Fill by quantity (otherwise price)
         inp_quantity: u64,      // Fill until quantity
         inp_net_price: u64,     // Fill until net price is reached
         inp_fill: bool,         // Require orders that are not posted to be filled completely (okd for posted orders)
+        inp_rollover: bool,     // Perform settlement log rollover
     ) -> anchor_lang::Result<()> {
         if inp_by_quantity {
             require!(inp_quantity > 0, ErrorCode::InvalidParameters);
@@ -2017,7 +2020,9 @@ pub mod aqua_dex {
                 &ctx.accounts.spl_token_prog.to_account_info(),     // SPL Token Program
             )?;
         }
-        store_struct::<TradeResult>(&result, acc_result)?;
+        if *acc_result.key != system_program::ID {
+            store_struct::<TradeResult>(&result, acc_result)?;
+        }
 
         msg!("atellix-log");
         emit!(OrderEvent {
@@ -2044,11 +2049,11 @@ pub mod aqua_dex {
     }
 
     pub fn market_ask<'a, 'b, 'c, 'info>(ctx: Context<'a, 'b, 'c, 'info, OrderContext<'info>>,
-        inp_rollover: bool,     // Perform settlement log rollover
         inp_by_quantity: bool,  // Fill by quantity (otherwise price)
         inp_quantity: u64,      // Fill until quantity
         inp_net_price: u64,     // Fill until net price is reached
         inp_fill: bool,         // Require orders that are not posted to be filled completely
+        inp_rollover: bool,     // Perform settlement log rollover
     ) -> anchor_lang::Result<()> {
         if inp_by_quantity {
             require!(inp_quantity > 0, ErrorCode::InvalidParameters);
@@ -2401,7 +2406,9 @@ pub mod aqua_dex {
             )?;
             result.set_tokens_received(tokens_received);
         }
-        store_struct::<TradeResult>(&result, acc_result)?;
+        if *acc_result.key != system_program::ID {
+            store_struct::<TradeResult>(&result, acc_result)?;
+        }
 
         msg!("atellix-log");
         emit!(OrderEvent {
@@ -2519,7 +2526,9 @@ pub mod aqua_dex {
                 &ctx.accounts.spl_token_prog.to_account_info(),     // SPL Token Program
             )?;
         }
-        store_struct::<WithdrawResult>(&result, acc_result)?;
+        if *acc_result.key != system_program::ID {
+            store_struct::<WithdrawResult>(&result, acc_result)?;
+        }
 
         msg!("atellix-log");
         emit!(CancelEvent {
@@ -2617,7 +2626,9 @@ pub mod aqua_dex {
             **ctx.accounts.owner.lamports.borrow_mut() = user_lamports;
 
             // Write result
-            store_struct::<WithdrawResult>(&result, acc_result)?;
+            if *acc_result.key != system_program::ID {
+                store_struct::<WithdrawResult>(&result, acc_result)?;
+            }
 
             // Close log if necessary
             if close_log {
@@ -2649,9 +2660,9 @@ pub mod aqua_dex {
     }
 
     pub fn expire_order<'a, 'b, 'c, 'info>(ctx: Context<'a, 'b, 'c, 'info, ExpireOrder<'info>>,
-        inp_rollover: bool,
         inp_side: u8,               // 0 - Bid, 1 - Ask
         inp_order_id: u128,
+        inp_rollover: bool,
     ) -> anchor_lang::Result<()> {
         let clock = Clock::get()?;
         let clock_ts = clock.unix_timestamp;
@@ -2748,9 +2759,9 @@ pub mod aqua_dex {
     }
 
     pub fn manager_cancel_order<'a, 'b, 'c, 'info>(ctx: Context<'a, 'b, 'c, 'info, ManagerCancelOrder<'info>>,
-        inp_rollover: bool,
         inp_side: u8,               // 0 - Bid, 1 - Ask
         inp_order_id: u128,
+        inp_rollover: bool,
     ) -> anchor_lang::Result<()> {
         let market = &ctx.accounts.market;
         let market_state = &ctx.accounts.state;
@@ -2837,7 +2848,9 @@ pub mod aqua_dex {
         map_remove(sl, order_type, leaf.key())?;
         Order::free_index(sl, order_type, leaf.slot())?;
 
-        store_struct::<WithdrawResult>(&result, acc_result)?;
+        if *acc_result.key != system_program::ID {
+            store_struct::<WithdrawResult>(&result, acc_result)?;
+        }
 
         msg!("atellix-log");
         emit!(CancelEvent {
@@ -2971,7 +2984,9 @@ pub mod aqua_dex {
             map_remove(sl, DT::Account, log_node.key())?;
             AccountEntry::free_index(sl, DT::Account, log_node.slot())?;
             // Write result
-            store_struct::<WithdrawResult>(&result, acc_result)?;
+            if *acc_result.key != system_program::ID {
+                store_struct::<WithdrawResult>(&result, acc_result)?;
+            }
 
             // Close log if necessary
             if close_log {
