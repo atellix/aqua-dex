@@ -134,7 +134,7 @@ async function main() {
     var resultAccounts = {}
     var resultData1
     var resultData2
-    if (true) {
+    if (false) {
         console.log("Create Result Accounts")
         resultData1 = anchor.web3.Keypair.generate()
         resultData2 = anchor.web3.Keypair.generate()

@@ -9,6 +9,7 @@ const fs = require('fs').promises
 const base32 = require("base32.js")
 const anchor = require('@project-serum/anchor')
 const lo = require('buffer-layout')
+const bigintConv = require('bigint-conversion')
 
 const provider = anchor.AnchorProvider.env()
 //const provider = anchor.Provider.local()
@@ -27,6 +28,58 @@ function showData(spec) {
         }
     }
     return r
+}
+
+function encodeOrderId(orderIdBuf) {
+    const enc = new base32.Encoder({ type: "crockford", lc: true })
+    var zflist = orderIdBuf.toJSON().data
+    var zflen = 16 - zflist.length
+    if (zflen > 0) {
+        zfprefix = Array(zflen).fill(0)
+        zflist = zfprefix.concat(zflist)
+    }
+    zflist.reverse()
+    return enc.write(new Uint8Array(zflist)).finalize()
+}
+
+function decodeOrderNode(tag, blob) {
+    var data
+    if (tag === 0) {
+        data = null
+    } else if (tag === 1) {
+        const stInnerNode = lo.struct([
+            lo.u32('tag'),
+            lo.blob(16, 'key'),
+            lo.u32('prefix_len'),
+            lo.seq(lo.u32(), 2, 'children'),
+            lo.blob(24),
+        ])
+        data = stInnerNode.decode(blob)
+    } else if (tag === 2) {
+        const stLeafNode = lo.struct([
+            lo.u32('tag'),
+            lo.u32('slot'),
+            lo.blob(16, 'key'),
+            lo.blob(32, 'owner'),
+        ])
+        const stPrice = lo.struct([
+            lo.blob(8),
+            lo.nu64('price'),
+        ])
+        data = stLeafNode.decode(blob)
+        //data['price'] = bigintConv.bufToBigint(data['key']) >> BigInt(64)
+        data['price'] = stPrice.decode(data['key'])['price']
+        data['key'] = encodeOrderId(data['key'])
+        data['owner'] = (new PublicKey(data['owner'].toJSON().data)).toString()
+    } else if (tag === 3 || tag === 4) {
+        const stFreeNode = lo.struct([
+            lo.u32('tag'),
+            lo.u32('next'),
+            lo.blob(48),
+        ])
+        data = stFreeNode.decode(blob)
+    }
+    return data
 }
 
 function decodeOrdersMap(pageTableEntry, pages) {
@@ -70,10 +123,7 @@ function decodeOrdersMap(pageTableEntry, pages) {
         for (var nodeIdx = 0; nodeIdx < res['nodes'].length; nodeIdx++) {
             var nodeBlob = res['nodes'][nodeIdx]
             var nodeTag = stNode.decode(nodeBlob)
-            nodeSpec['nodes'].push({
-                'tag': nodeTag['tag'],
-                'data': nodeBlob,
-            })
+            nodeSpec['nodes'].push(decodeOrderNode(nodeTag['tag'], nodeBlob))
             if (nodeSpec['nodes'].length === pageTableEntry['alloc_items']) {
                 i = mapPages.length
                 break
@@ -126,6 +176,26 @@ function decodeOrdersVec(pageTableEntry, pages) {
     return orderSpec
 }
 
+function decodeOrderBookSide(side, mapData, vecData) {
+    var orderBook = []
+    for (var i = 0; i < mapData['nodes'].length; i++) {
+        var node = mapData['nodes'][i]
+        if (node && node.tag === 2) {
+            var order = vecData['orders'][node.slot]
+            var orderItem = {
+                'type': side,
+                'key': node['key'],
+                'price': node['price'],
+                'owner': node['owner'],
+                'amount': order['amount'],
+                'expiry': order['expiry'],
+            }
+            orderBook.push(orderItem)
+        }
+    }
+    return orderBook
+}
+
 function decodeOrderBook(data) {
     const stTypedPage = lo.struct([
         lo.nu64('header_size'),
@@ -146,22 +216,20 @@ function decodeOrderBook(data) {
     var askVec = res['type_page'][3]
 
     var bidVecData = decodeOrdersVec(bidVec, res['pages'])
-    console.log('Bid Vec:')
-    console.log(bidVecData)
-
     var askVecData = decodeOrdersVec(askVec, res['pages'])
+    var bidMapData = decodeOrdersMap(bidMap, res['pages'])
+    var askMapData = decodeOrdersMap(askMap, res['pages'])
+    console.log(decodeOrderBookSide('bid', bidMapData, bidVecData))
+    console.log(decodeOrderBookSide('ask', askMapData, askVecData))
+    
+    /*console.log('Bid Vec:')
+    console.log(bidVecData)
     console.log('Ask Vec:')
     console.log(askVecData)
-
-    /*var bidMapData = decodeOrdersMap(bidMap, res['pages'])
     console.log('Bid Map:')
-    console.log(bidMapData)*/
-
-
-    /*var askMapData = decodeOrdersMap(askMap, res['pages'])
+    console.log(bidMapData)
     console.log('Ask Map:')
     console.log(askMapData)*/
-
 
     //console.log(res)
     //var pageTableHeaderLen = 130
