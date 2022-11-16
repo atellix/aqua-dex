@@ -134,7 +134,7 @@ async function main() {
     var resultAccounts = {}
     var resultData1
     var resultData2
-    if (false) {
+    if (true) {
         console.log("Create Result Accounts")
         resultData1 = anchor.web3.Keypair.generate()
         resultData2 = anchor.web3.Keypair.generate()
@@ -180,10 +180,10 @@ async function main() {
 
     var order1
 
-    if (false) {
+    if (true) {
         console.log('Limit Ask 1')
         console.log(await aquadex.rpc.limitAsk(
-            new anchor.BN(1 * (10**9)),    // Quantity
+            new anchor.BN(10 * (10**9)),     // Quantity
             new anchor.BN(14.62 * (10**6)),  // Price
             true,                            // Post
             false,                           // Fill
@@ -213,7 +213,7 @@ async function main() {
         console.log(formatOrder(res))
     }
 
-    if (true) {
+    if (false) {
         console.log('Cancel Order 1')
         var orderId = decodeOrderId('00000000vwap00000000000008')
         //var orderId = order1

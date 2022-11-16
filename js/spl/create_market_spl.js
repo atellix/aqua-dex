@@ -74,7 +74,7 @@ async function main() {
     writeData['settle1'] = settle1.publicKey.toString()
     writeData['settle2'] = settle2.publicKey.toString()
 
-    const ordersBytes = 130 + (16384 * 8)
+    const ordersBytes = 130 + (16384 * 7)
     const ordersRent = await provider.connection.getMinimumBalanceForRentExemption(ordersBytes)
 
     const settleBytes = 130 + (16384 * 8)

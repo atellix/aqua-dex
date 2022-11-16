@@ -24,8 +24,11 @@ pub const VERSION_MAJOR: u32 = 1;
 pub const VERSION_MINOR: u32 = 0;
 pub const VERSION_PATCH: u32 = 0;
 
-pub const MAX_ORDERS: u32 = 16;         // Max orders on each side of the orderbook
-pub const MAX_ACCOUNTS: u32 = 16;       // Max number of accounts per settlement data file
+//pub const MAX_ORDERS: u32 = 500;        // Max orders on each side of the orderbook (16K * 7)
+//pub const MAX_ACCOUNTS: u32 = 1500;     // Max number of accounts per settlement data file (16K * 8)
+// TESTING
+pub const MAX_ORDERS: u32 = 10;         // Max orders on each side of the orderbook
+pub const MAX_ACCOUNTS: u32 = 20;       // Max number of accounts per settlement data file
 pub const MAX_EVICTIONS: u32 = 10;      // Max number of orders to evict before aborting
 pub const MAX_EXPIRATIONS: u32 = 10;    // Max number of expired orders to remove before proceeding with current order
 
@@ -436,14 +439,14 @@ fn log_settlement(
 
     if mkt_token {
         state.mkt_order_balance = state.mkt_order_balance.checked_sub(amount).ok_or(error!(ErrorCode::Overflow))?;
-        state.mkt_log_balance = state.mkt_log_balance.checked_sub(amount).ok_or(error!(ErrorCode::Overflow))?;
+        state.mkt_log_balance = state.mkt_log_balance.checked_add(amount).ok_or(error!(ErrorCode::Overflow))?;
         /*msg!("Atellix: Market Token Vault Balance: {} (Orderbook: {})",
             state.mkt_vault_balance.to_string(),
             state.mkt_order_balance.to_string(),
         );*/
     } else {
         state.prc_order_balance = state.prc_order_balance.checked_sub(amount).ok_or(error!(ErrorCode::Overflow))?;
-        state.prc_log_balance = state.prc_log_balance.checked_sub(amount).ok_or(error!(ErrorCode::Overflow))?;
+        state.prc_log_balance = state.prc_log_balance.checked_add(amount).ok_or(error!(ErrorCode::Overflow))?;
         /*msg!("Atellix: Pricing Token Vault Balance: {} (Orderbook: {})",
             state.prc_vault_balance.to_string(),
             state.prc_order_balance.to_string(),
@@ -680,6 +683,8 @@ pub mod aqua_dex {
         inp_prc_vault_uuid: u128,
     ) -> anchor_lang::Result<()> {
         msg!("Begin Market Setup");
+        let clock = Clock::get()?;
+        let clock_ts = clock.unix_timestamp;
 
         let acc_market = &ctx.accounts.market.to_account_info();
         let acc_state = &ctx.accounts.state.to_account_info();
@@ -864,14 +869,14 @@ pub mod aqua_dex {
             active_ask: 0,
             mkt_vault_balance: 0,
             mkt_order_balance: 0,
-            mkt_user_balance: 0,
+            mkt_user_vault_balance: 0,
             mkt_log_balance: 0,
             prc_vault_balance: 0,
             prc_order_balance: 0,
-            prc_user_balance: 0,
+            prc_user_vault_balance: 0,
             prc_log_balance: 0,
             prc_fees_balance: 0,
-            last_ts: 0,
+            last_ts: clock_ts,
             last_price: 0,
         };
         msg!("Atellix: Store Market State");
@@ -1064,6 +1069,7 @@ pub mod aqua_dex {
                     log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &posted_node.owner(), false, tokens_part)?;
                     state_upd.active_ask = state_upd.active_ask.checked_sub(1).ok_or(error!(ErrorCode::Overflow))?;
                     state_upd.last_price = posted_price;
+                    state_upd.last_ts = clock_ts;
                     break;
                 } else if posted_qty < tokens_to_fill {   // Match the entire order and continue
                     tokens_to_fill = tokens_to_fill.checked_sub(posted_qty).ok_or(error!(ErrorCode::Overflow))?;
@@ -1090,6 +1096,7 @@ pub mod aqua_dex {
                     log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &posted_node.owner(), false, tokens_part)?;
                     state_upd.active_ask = state_upd.active_ask.checked_sub(1).ok_or(error!(ErrorCode::Overflow))?;
                     state_upd.last_price = posted_price;
+                    state_upd.last_ts = clock_ts;
                 } else if posted_qty > tokens_to_fill {   // Match part of the order
                     tokens_filled = tokens_filled.checked_add(tokens_to_fill).ok_or(error!(ErrorCode::Overflow))?;
                     let tokens_part = scale_price(tokens_to_fill, posted_price, mkt_decimal_factor)?;
@@ -1113,6 +1120,7 @@ pub mod aqua_dex {
                     ob.index_mut::<Order>(OrderDT::AskOrder as u16, posted_node.slot() as usize).set_amount(new_amount);
                     log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &posted_node.owner(), false, tokens_part)?;
                     state_upd.last_price = posted_price;
+                    state_upd.last_ts = clock_ts;
                     break;
                 }
             } else {
@@ -1436,6 +1444,7 @@ pub mod aqua_dex {
                     Order::free_index(ob, DT::BidOrder, posted_node.slot())?;
                     log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &posted_node.owner(), true, tokens_to_fill)?;
                     state_upd.last_price = posted_price;
+                    state_upd.last_ts = clock_ts;
                     break;
                 } else if posted_qty < tokens_to_fill {   // Match the entire order and continue
                     tokens_to_fill = tokens_to_fill.checked_sub(posted_qty).ok_or(error!(ErrorCode::Overflow))?;
@@ -1461,6 +1470,7 @@ pub mod aqua_dex {
                     Order::free_index(ob, DT::BidOrder, posted_node.slot())?;
                     log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &posted_node.owner(), true, posted_qty)?;
                     state_upd.last_price = posted_price;
+                    state_upd.last_ts = clock_ts;
                 } else if posted_qty > tokens_to_fill {   // Match part of the order
                     tokens_filled = tokens_filled.checked_add(tokens_to_fill).ok_or(error!(ErrorCode::Overflow))?;
                     let tokens_part = scale_price(tokens_to_fill, posted_price, mkt_decimal_factor)?;
@@ -1484,6 +1494,7 @@ pub mod aqua_dex {
                     ob.index_mut::<Order>(OrderDT::BidOrder as u16, posted_node.slot() as usize).set_amount(new_amount);
                     log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &posted_node.owner(), true, tokens_to_fill)?;
                     state_upd.last_price = posted_price;
+                    state_upd.last_ts = clock_ts;
                     break;
                 }
             } else {
@@ -1790,6 +1801,7 @@ pub mod aqua_dex {
                     log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &posted_node.owner(), false, tokens_part)?;
                     state_upd.active_ask = state_upd.active_ask.checked_sub(1).ok_or(error!(ErrorCode::Overflow))?;
                     state_upd.last_price = posted_price;
+                    state_upd.last_ts = clock_ts;
                     break;
                 } else if posted_qty < tokens_to_fill {   // Match the entire order and continue
                     tokens_to_fill = tokens_to_fill.checked_sub(posted_qty).ok_or(error!(ErrorCode::Overflow))?;
@@ -1818,6 +1830,7 @@ pub mod aqua_dex {
                     log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &posted_node.owner(), false, tokens_part)?;
                     state_upd.active_ask = state_upd.active_ask.checked_sub(1).ok_or(error!(ErrorCode::Overflow))?;
                     state_upd.last_price = posted_price;
+                    state_upd.last_ts = clock_ts;
                 } else if posted_qty > tokens_to_fill {   // Match part of the order
                     tokens_filled = tokens_filled.checked_add(tokens_to_fill).ok_or(error!(ErrorCode::Overflow))?;
                     let tokens_part = scale_price(tokens_to_fill, posted_price, mkt_decimal_factor)?;
@@ -1843,6 +1856,7 @@ pub mod aqua_dex {
                     state_upd.prc_order_balance = state_upd.prc_order_balance.checked_add(tokens_part).ok_or(error!(ErrorCode::Overflow))?;
                     log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &posted_node.owner(), false, tokens_part)?;
                     state_upd.last_price = posted_price;
+                    state_upd.last_ts = clock_ts;
                     break;
                 }
             } else {
@@ -1873,6 +1887,7 @@ pub mod aqua_dex {
                     log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &posted_node.owner(), false, posted_part)?;
                     state_upd.active_ask = state_upd.active_ask.checked_sub(1).ok_or(error!(ErrorCode::Overflow))?;
                     state_upd.last_price = posted_price;
+                    state_upd.last_ts = clock_ts;
                     break;
                 } else if posted_part < price_to_fill {   // Match the entire order and continue
                     price_to_fill = price_to_fill.checked_sub(posted_part).ok_or(error!(ErrorCode::Overflow))?;
@@ -1900,6 +1915,7 @@ pub mod aqua_dex {
                     log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &posted_node.owner(), false, posted_part)?;
                     state_upd.active_ask = state_upd.active_ask.checked_sub(1).ok_or(error!(ErrorCode::Overflow))?;
                     state_upd.last_price = posted_price;
+                    state_upd.last_ts = clock_ts;
                 } else if posted_part > price_to_fill {   // Match part of the order
                     // Calculate filled tokens
                     let fill_amount = fill_quantity(price_to_fill, posted_price, mkt_decimal_factor)?;
@@ -1926,6 +1942,7 @@ pub mod aqua_dex {
                     state_upd.prc_order_balance = state_upd.prc_order_balance.checked_add(price_to_fill).ok_or(error!(ErrorCode::Overflow))?;
                     log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &posted_node.owner(), false, price_to_fill)?;
                     state_upd.last_price = posted_price;
+                    state_upd.last_ts = clock_ts;
                     break;
                 }
             }
@@ -2171,6 +2188,7 @@ pub mod aqua_dex {
                     log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &posted_node.owner(), true, tokens_to_fill)?;
                     state_upd.active_bid = state_upd.active_bid.checked_sub(1).ok_or(error!(ErrorCode::Overflow))?;
                     state_upd.last_price = posted_price;
+                    state_upd.last_ts = clock_ts;
                     break;
                 } else if posted_qty < tokens_to_fill {   // Match the entire order and continue
                     tokens_to_fill = tokens_to_fill.checked_sub(posted_qty).ok_or(error!(ErrorCode::Overflow))?;
@@ -2199,6 +2217,7 @@ pub mod aqua_dex {
                     log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &posted_node.owner(), true, posted_qty)?;
                     state_upd.active_bid = state_upd.active_bid.checked_sub(1).ok_or(error!(ErrorCode::Overflow))?;
                     state_upd.last_price = posted_price;
+                    state_upd.last_ts = clock_ts;
                 } else if posted_qty > tokens_to_fill {   // Match part of the order
                     tokens_filled = tokens_filled.checked_add(tokens_to_fill).ok_or(error!(ErrorCode::Overflow))?;
                     let tokens_part = scale_price(tokens_to_fill, posted_price, mkt_decimal_factor)?;
@@ -2224,6 +2243,7 @@ pub mod aqua_dex {
                     state_upd.mkt_order_balance = state_upd.mkt_order_balance.checked_add(tokens_to_fill).ok_or(error!(ErrorCode::Overflow))?;
                     log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &posted_node.owner(), true, tokens_to_fill)?;
                     state_upd.last_price = posted_price;
+                    state_upd.last_ts = clock_ts;
                     break;
                 }
             } else {
@@ -2254,6 +2274,7 @@ pub mod aqua_dex {
                     log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &posted_node.owner(), true, posted_qty)?;
                     state_upd.active_bid = state_upd.active_bid.checked_sub(1).ok_or(error!(ErrorCode::Overflow))?;
                     state_upd.last_price = posted_price;
+                    state_upd.last_ts = clock_ts;
                     break;
                 } else if posted_part < price_to_fill {   // Match the entire order and continue
                     price_to_fill = price_to_fill.checked_sub(posted_part).ok_or(error!(ErrorCode::Overflow))?;
@@ -2281,6 +2302,7 @@ pub mod aqua_dex {
                     log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &posted_node.owner(), true, posted_qty)?;
                     state_upd.active_bid = state_upd.active_bid.checked_sub(1).ok_or(error!(ErrorCode::Overflow))?;
                     state_upd.last_price = posted_price;
+                    state_upd.last_ts = clock_ts;
                 } else if posted_part > price_to_fill {   // Match part of the order
                     let fill_amount = fill_quantity(price_to_fill, posted_price, mkt_decimal_factor)?;
                     tokens_filled = tokens_filled.checked_add(fill_amount).ok_or(error!(ErrorCode::Overflow))?;
@@ -2306,6 +2328,7 @@ pub mod aqua_dex {
                     state_upd.mkt_order_balance = state_upd.mkt_order_balance.checked_add(fill_amount).ok_or(error!(ErrorCode::Overflow))?;
                     log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &posted_node.owner(), true, fill_amount)?;
                     state_upd.last_price = posted_price;
+                    state_upd.last_ts = clock_ts;
                     break;
                 }
             }
@@ -2473,6 +2496,12 @@ pub mod aqua_dex {
         let order = sl.index::<Order>(index_datatype(order_type), leaf.slot() as usize);
         let state = &mut ctx.accounts.state;
         state.action_counter = state.action_counter.checked_add(1).ok_or(error!(ErrorCode::Overflow))?;
+        if side == Side::Bid {
+            state.active_bid = state.active_bid.checked_sub(1).ok_or(error!(ErrorCode::Overflow))?;
+        } else if side == Side::Ask {
+            state.active_ask = state.active_ask.checked_sub(1).ok_or(error!(ErrorCode::Overflow))?;
+        }
+
         let mut result = WithdrawResult { mkt_tokens: 0, prc_tokens: 0 };
         let order_id = leaf.key();
         let order_price = Order::price(order_id);
@@ -3157,13 +3186,13 @@ pub mod aqua_dex {
             if log_entry.mkt_token_balance() > 0 {
                 market_tokens = log_entry.mkt_token_balance();
                 state.mkt_log_balance = state.mkt_log_balance.checked_sub(market_tokens).ok_or(error!(ErrorCode::Overflow))?;
-                state.mkt_user_balance = state.mkt_user_balance.checked_add(market_tokens).ok_or(error!(ErrorCode::Overflow))?;
+                state.mkt_user_vault_balance = state.mkt_user_vault_balance.checked_add(market_tokens).ok_or(error!(ErrorCode::Overflow))?;
                 vault.mkt_tokens = vault.mkt_tokens.checked_add(market_tokens).ok_or(error!(ErrorCode::Overflow))?;
             }
             if log_entry.prc_token_balance() > 0 {
                 pricing_tokens = log_entry.prc_token_balance();
                 state.prc_log_balance = state.prc_log_balance.checked_sub(pricing_tokens).ok_or(error!(ErrorCode::Overflow))?;
-                state.prc_user_balance = state.prc_user_balance.checked_add(pricing_tokens).ok_or(error!(ErrorCode::Overflow))?;
+                state.prc_user_vault_balance = state.prc_user_vault_balance.checked_add(pricing_tokens).ok_or(error!(ErrorCode::Overflow))?;
                 vault.prc_tokens = vault.prc_tokens.checked_add(pricing_tokens).ok_or(error!(ErrorCode::Overflow))?;
             }
             // Remove log entry
@@ -3242,7 +3271,7 @@ pub mod aqua_dex {
                 )?;
                 vault.mkt_tokens = 0;
                 state.mkt_vault_balance = state.mkt_vault_balance.checked_sub(market_tokens).ok_or(error!(ErrorCode::Overflow))?;
-                state.mkt_user_balance = state.mkt_user_balance.checked_sub(market_tokens).ok_or(error!(ErrorCode::Overflow))?;
+                state.mkt_user_vault_balance = state.mkt_user_vault_balance.checked_sub(market_tokens).ok_or(error!(ErrorCode::Overflow))?;
             }
             if vault.prc_tokens > 0 {
                 pricing_tokens = vault.prc_tokens;
@@ -3255,7 +3284,7 @@ pub mod aqua_dex {
                 )?;
                 vault.prc_tokens = 0;
                 state.prc_vault_balance = state.prc_vault_balance.checked_sub(pricing_tokens).ok_or(error!(ErrorCode::Overflow))?;
-                state.prc_user_balance = state.prc_user_balance.checked_sub(pricing_tokens).ok_or(error!(ErrorCode::Overflow))?;
+                state.prc_user_vault_balance = state.prc_user_vault_balance.checked_sub(pricing_tokens).ok_or(error!(ErrorCode::Overflow))?;
             }
 
             msg!("atellix-log");
@@ -3320,7 +3349,7 @@ pub mod aqua_dex {
                 )?;
                 vault.mkt_tokens = 0;
                 state.mkt_vault_balance = state.mkt_vault_balance.checked_sub(market_tokens).ok_or(error!(ErrorCode::Overflow))?;
-                state.mkt_user_balance = state.mkt_user_balance.checked_sub(market_tokens).ok_or(error!(ErrorCode::Overflow))?;
+                state.mkt_user_vault_balance = state.mkt_user_vault_balance.checked_sub(market_tokens).ok_or(error!(ErrorCode::Overflow))?;
             }
             if vault.prc_tokens > 0 {
                 pricing_tokens = vault.prc_tokens;
@@ -3333,7 +3362,7 @@ pub mod aqua_dex {
                 )?;
                 vault.prc_tokens = 0;
                 state.prc_vault_balance = state.prc_vault_balance.checked_sub(pricing_tokens).ok_or(error!(ErrorCode::Overflow))?;
-                state.prc_user_balance = state.prc_user_balance.checked_sub(pricing_tokens).ok_or(error!(ErrorCode::Overflow))?;
+                state.prc_user_vault_balance = state.prc_user_vault_balance.checked_sub(pricing_tokens).ok_or(error!(ErrorCode::Overflow))?;
             }
 
             msg!("atellix-log");
@@ -3829,14 +3858,14 @@ pub struct MarketState {
     pub active_ask: u64,                // Active ask orders in the orderbook
     pub mkt_vault_balance: u64,         // Token A vault total balance (including tokens available to withdraw)
     pub mkt_order_balance: u64,         // Token A order balance (tokens in vault available to trade)
-    pub mkt_user_balance: u64,          // Token A order balance (tokens in vault available to trade)
+    pub mkt_user_vault_balance: u64,    // Token A order balance (tokens in vault available to trade)
     pub mkt_log_balance: u64,           // Token A balance in the settlement log
     pub prc_vault_balance: u64,         // Token B vault total balance
     pub prc_order_balance: u64,         // Token B order balance
-    pub prc_user_balance: u64,          // Token B user vault balance
+    pub prc_user_vault_balance: u64,    // Token B user vault balance
     pub prc_log_balance: u64,           // Token B balance in the settlement log
     pub prc_fees_balance: u64,          // Token B commission fees balance
-    pub last_ts: i64,                   // Timestamp of last event
+    pub last_ts: i64,                   // Timestamp of last event (market created or order filled)
     pub last_price: u64,                // Last price (Do not use as an oracle value, prices should be averaged over some period of time for that purpose.)
 }
 

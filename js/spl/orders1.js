@@ -9,8 +9,8 @@ const fs = require('fs').promises
 const base32 = require("base32.js")
 const anchor = require('@project-serum/anchor')
 
-const provider = anchor.Provider.env()
-//const provider = anchor.Provider.local()
+const provider = anchor.AnchorProvider.env()
+//const provider = anchor.AnchorProvider.local()
 anchor.setProvider(provider)
 
 const aquadex = anchor.workspace.AquaDex
@@ -35,7 +35,6 @@ var tradeResultRent
 var withdrawResultBytes
 var withdrawResultRent
 
-const SPL_TOKEN_BYTES = 165
 const SPL_ASSOCIATED_TOKEN = new PublicKey('ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL')
 async function associatedTokenAddress(walletAddress, tokenMintAddress) {
     const addr = await PublicKey.findProgramAddress(
@@ -63,6 +62,12 @@ function importSecretKey(keyStr) {
     return Keypair.fromSecretKey(new Uint8Array(spec))
 }
 
+function buf2hex(buffer) { // buffer is an ArrayBuffer
+  return [...new Uint8Array(buffer)]
+      .map(x => x.toString(16).padStart(2, '0'))
+      .join('');
+}
+
 function encodeOrderId(orderId) {
     const enc = new base32.Encoder({ type: "crockford", lc: true })
     var zflist = orderId.toBuffer().toJSON().data
@@ -74,12 +79,30 @@ function encodeOrderId(orderId) {
     return enc.write(new Uint8Array(zflist)).finalize()
 }
 
+function decodeOrderId(orderId) {
+    var dec = new base32.Decoder({ type: "crockford" })
+    var spec = dec.write(orderId).finalize()
+    var arr = new Uint8Array(spec)
+    var arrhex = [...arr].map(x => x.toString(16).padStart(2, '0')).join('')
+    var bgn = BigInt('0x' + arrhex)
+    return new anchor.BN(bgn.toString())
+}
+
 function formatOrder(order) {
     var res = {
-        tokensFilled: order.tokensFilled.toString(),
-        tokensPosted: order.tokensPosted.toString(),
-        tokensDeposited: order.tokensDeposited.toString(),
+        tokensReceived: order.tokensReceived.toString(),
+        tokensSent: order.tokensSent.toString(),
+        tokensFee: order.tokensFee.toString(),
+        postedQuantity: order.postedQuantity.toString(),
         orderId: encodeOrderId(order.orderId),
+    }
+    return res
+}
+
+function formatWithdraw(order) {
+    var res = {
+        marketTokens: order.mktTokens.toString(),
+        pricingTokens: order.prcTokens.toString(),
     }
     return res
 }
@@ -87,7 +110,7 @@ function formatOrder(order) {
 async function readMarketSpec() {
     var mjs
     try {
-        mjs = await fs.readFile('market.json')
+        mjs = await fs.readFile('market_wsol_usdc_1.json')
     } catch (error) {
         console.error('File Error: ', error)
     }
@@ -114,9 +137,9 @@ async function readMarketSpec() {
 async function limitOrder(orderType, user, result, qty, price) {
     var userToken1 = await associatedTokenAddress(user.publicKey, tokenMint1)
     var userToken2 = await associatedTokenAddress(user.publicKey, tokenMint2)
-    var mktSpec = await aquadex.account.market.fetch(marketPK)
-    settle1PK = mktSpec.settleA
-    settle2PK = mktSpec.settleB
+    var mktState = await aquadex.account.marketState.fetch(marketStatePK)
+    settle1PK = mktState.settleA
+    settle2PK = mktState.settleB
     var params = {
         accounts: {
             market: marketPK,
@@ -138,7 +161,7 @@ async function limitOrder(orderType, user, result, qty, price) {
     var rollover = false
     var signers = [user, result]
     var tx = new anchor.web3.Transaction()
-    if (mktSpec.logRollover) {
+    if (mktState.logRollover) {
         console.log("--- PERFORMING SETTLEMENT LOG ROLLOVER ---")
         rollover = true
         var settle = anchor.web3.Keypair.generate()
@@ -156,26 +179,26 @@ async function limitOrder(orderType, user, result, qty, price) {
     }
     if (orderType === 'bid') {
         tx.add(await aquadex.instruction.limitBid(
-            rollover,                       // Rollover settlement log
-            new anchor.BN(qty * 10000),     // Quantity
-            new anchor.BN(price * 10000),   // Price
+            new anchor.BN(qty),     // Quantity
+            new anchor.BN(price),   // Price
             true,
             false,
             new anchor.BN(0),               // Order expiry
+            rollover,                       // Rollover settlement log
             params,
         ))
     } else {
         tx.add(await aquadex.instruction.limitAsk(
-            rollover,                       // Rollover settlement log
-            new anchor.BN(qty * 10000),     // Quantity
-            new anchor.BN(price * 10000),   // Price
+            new anchor.BN(qty),     // Quantity
+            new anchor.BN(price),   // Price
             true,
             false,
             new anchor.BN(0),               // Order expiry
+            rollover,                       // Rollover settlement log
             params,
         ))
     }
-    await provider.send(tx, signers)
+    return await provider.sendAndConfirm(tx, signers)
 }
 
 async function main() {
@@ -183,7 +206,7 @@ async function main() {
 
     var ujs
     try {
-        ujs = await fs.readFile('users.json')
+        ujs = await fs.readFile('user_data/user_list.json')
     } catch (error) {
         console.error('File Error: ', error)
     }
@@ -201,7 +224,7 @@ async function main() {
             programId: aquadexPK
         })
     )
-    await provider.send(tx, [resultData1])
+    await provider.sendAndConfirm(tx, [resultData1])
 
     for (var i = 0; i < users.length; i++) {
         var user = users[i]
@@ -209,8 +232,11 @@ async function main() {
         var userWallet = importSecretKey(user.secret)
         var userToken1 = await associatedTokenAddress(userWallet.publicKey, tokenMint1)
         var userToken2 = await associatedTokenAddress(userWallet.publicKey, tokenMint2)
+        console.log(await limitOrder('bid', userWallet, resultData1, 1 * (10**9), 15 * (10**6)))
+        var res = await aquadex.account.tradeResult.fetch(resultData1.publicKey)
+        console.log(formatOrder(res))
 
-        if ((i % 2) == 0) {
+        /*if ((i % 2) == 0) {
             console.log('Ask')
             await limitOrder('ask', userWallet, resultData1, 10, 5)
             var res = await aquadex.account.tradeResult.fetch(resultData1.publicKey)
@@ -220,11 +246,12 @@ async function main() {
             await limitOrder('bid', userWallet, resultData1, 10, 5)
             var res = await aquadex.account.tradeResult.fetch(resultData1.publicKey)
             console.log(formatOrder(res))
-        }
+        }*/
 
         /*if (i == 1) {
             process.exit(0)
         }*/
+        break
     }
 }
 
