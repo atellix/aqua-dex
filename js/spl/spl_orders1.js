@@ -183,8 +183,8 @@ async function main() {
     if (true) {
         console.log('Limit Ask 1')
         console.log(await aquadex.rpc.limitAsk(
-            new anchor.BN(10 * (10**9)),     // Quantity
-            new anchor.BN(14.62 * (10**6)),  // Price
+            new anchor.BN(1 * (10**9)),      // Quantity
+            new anchor.BN(7.82 * (10**6)),   // Price
             true,                            // Post
             false,                           // Fill
             new anchor.BN(0),                // Order expiry

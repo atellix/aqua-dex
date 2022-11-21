@@ -931,8 +931,8 @@ pub mod aqua_dex {
     pub fn limit_bid<'a, 'b, 'c, 'info>(ctx: Context<'a, 'b, 'c, 'info, OrderContext<'info>>,
         inp_quantity: u64,
         inp_price: u64,
-        inp_post: bool,     // Post the order order to the orderbook, otherwise it must be filled immediately
-        inp_fill: bool,     // Require orders that are not posted to be filled completely (okd for posted orders)
+        inp_post: bool,     // Post the order order to the orderbook, otherwise fill based on parameter below
+        inp_fill: bool,     // Require orders that are not posted to be filled completely
         inp_expires: i64,   // Unix timestamp for order expiration (must be in the future, must exceed minimum duration)
         inp_rollover: bool, // Perform settlement log rollover
     ) -> anchor_lang::Result<()> {
@@ -1278,7 +1278,7 @@ pub mod aqua_dex {
                 &ctx.accounts.spl_token_prog.to_account_info(),     // SPL Token Program
             )?;
         }
-        if *acc_result.key != system_program::ID {
+        if *acc_result.key != *acc_user.key {
             store_struct::<TradeResult>(&result, acc_result)?;
         }
 
@@ -1309,7 +1309,7 @@ pub mod aqua_dex {
     pub fn limit_ask<'a, 'b, 'c, 'info>(ctx: Context<'a, 'b, 'c, 'info, OrderContext<'info>>,
         inp_quantity: u64,
         inp_price: u64,
-        inp_post: bool,     // Post the order order to the orderbook, otherwise it must be filled immediately
+        inp_post: bool,     // Post the order order to the orderbook, otherwise fill based on parameter below
         inp_fill: bool,     // Require orders that are not posted to be filled completely
         inp_expires: i64,   // Unix timestamp for order expiration (must be in the future, must exceed minimum duration)
         inp_rollover: bool, // Perform settlement log rollover
@@ -1650,7 +1650,7 @@ pub mod aqua_dex {
             )?;
             result.set_tokens_received(tokens_received);
         }
-        if *acc_result.key != system_program::ID {
+        if *acc_result.key != *acc_user.key {
             store_struct::<TradeResult>(&result, acc_result)?;
         }
 
@@ -1682,7 +1682,7 @@ pub mod aqua_dex {
         inp_by_quantity: bool,  // Fill by quantity (otherwise price)
         inp_quantity: u64,      // Fill until quantity
         inp_net_price: u64,     // Fill until net price is reached
-        inp_fill: bool,         // Require orders that are not posted to be filled completely (okd for posted orders)
+        inp_fill: bool,         // Require order to be filled completely
         inp_rollover: bool,     // Perform settlement log rollover
     ) -> anchor_lang::Result<()> {
         if inp_by_quantity {
@@ -1987,12 +1987,18 @@ pub mod aqua_dex {
 
         let mut result = TradeResult { tokens_received: tokens_filled, posted_quantity: 0, tokens_sent: 0, tokens_fee: tokens_fee, order_id: 0 };
 
-        if inp_fill && inp_by_quantity && tokens_filled != inp_quantity {
-            msg!("Order not filled");
-            return Err(ErrorCode::OrderNotFilled.into());
-        } else if inp_fill && !inp_by_quantity && tokens_paid == inp_net_price {
-            msg!("Order not filled");
-            return Err(ErrorCode::OrderNotFilled.into());
+        if inp_fill {
+            if inp_by_quantity {
+                if tokens_filled != inp_quantity {
+                    msg!("Order not filled");
+                    return Err(ErrorCode::OrderNotFilled.into());
+                }
+            } else {
+                if tokens_paid != inp_net_price {
+                    msg!("Order not filled");
+                    return Err(ErrorCode::OrderNotFilled.into());
+                }
+            }
         }
 
         // Apply fees
@@ -2037,9 +2043,14 @@ pub mod aqua_dex {
                 &ctx.accounts.spl_token_prog.to_account_info(),     // SPL Token Program
             )?;
         }
-        if *acc_result.key != system_program::ID {
+        if *acc_result.key != *acc_user.key {
             store_struct::<TradeResult>(&result, acc_result)?;
         }
+        let was_filled: bool = if inp_by_quantity {
+            tokens_filled == inp_quantity
+        } else {
+            tokens_paid == inp_net_price
+        };
 
         msg!("atellix-log");
         emit!(OrderEvent {
@@ -2051,7 +2062,7 @@ pub mod aqua_dex {
             pricing_token: ctx.accounts.user_prc_token.key(),
             order_id: 0,
             order_side: Side::Bid as u8,
-            filled: tokens_filled == inp_quantity,
+            filled: was_filled,
             tokens_received: result.tokens_received,
             tokens_sent: result.tokens_sent,
             tokens_fee: tokens_fee,
@@ -2069,7 +2080,7 @@ pub mod aqua_dex {
         inp_by_quantity: bool,  // Fill by quantity (otherwise price)
         inp_quantity: u64,      // Fill until quantity
         inp_net_price: u64,     // Fill until net price is reached
-        inp_fill: bool,         // Require orders that are not posted to be filled completely
+        inp_fill: bool,         // Require order to be filled completely
         inp_rollover: bool,     // Perform settlement log rollover
     ) -> anchor_lang::Result<()> {
         if inp_by_quantity {
@@ -2376,12 +2387,18 @@ pub mod aqua_dex {
 
         let mut result = TradeResult { tokens_received: 0, posted_quantity: 0, tokens_sent: tokens_filled, tokens_fee: tokens_fee, order_id: 0 };
 
-        if inp_fill && inp_by_quantity && tokens_filled != inp_quantity {
-            msg!("Order not filled");
-            return Err(ErrorCode::OrderNotFilled.into());
-        } else if inp_fill && !inp_by_quantity && tokens_received == inp_net_price {
-            msg!("Order not filled");
-            return Err(ErrorCode::OrderNotFilled.into());
+        if inp_fill {
+            if inp_by_quantity {
+                if tokens_filled != inp_quantity {
+                    msg!("Order not filled");
+                    return Err(ErrorCode::OrderNotFilled.into());
+                }
+            } else {
+                if tokens_received != inp_net_price {
+                    msg!("Order not filled");
+                    return Err(ErrorCode::OrderNotFilled.into());
+                }
+            }
         }
 
         /*msg!("Atellix: Market Token Vault Deposit: {}", inp_quantity.to_string());
@@ -2429,9 +2446,14 @@ pub mod aqua_dex {
             )?;
             result.set_tokens_received(tokens_received);
         }
-        if *acc_result.key != system_program::ID {
+        if *acc_result.key != *acc_user.key {
             store_struct::<TradeResult>(&result, acc_result)?;
         }
+        let was_filled: bool = if inp_by_quantity {
+            tokens_filled == inp_quantity
+        } else {
+            tokens_received == inp_net_price
+        };
 
         msg!("atellix-log");
         emit!(OrderEvent {
@@ -2443,7 +2465,7 @@ pub mod aqua_dex {
             pricing_token: ctx.accounts.user_prc_token.key(),
             order_id: result.order_id,
             order_side: Side::Ask as u8,
-            filled: inp_quantity == tokens_filled,
+            filled: was_filled,
             tokens_received: result.tokens_received,
             tokens_sent: result.tokens_sent,
             tokens_fee: result.tokens_fee,
@@ -2555,7 +2577,7 @@ pub mod aqua_dex {
                 &ctx.accounts.spl_token_prog.to_account_info(),     // SPL Token Program
             )?;
         }
-        if *acc_result.key != system_program::ID {
+        if *acc_result.key != *acc_owner.key {
             store_struct::<WithdrawResult>(&result, acc_result)?;
         }
 
@@ -2655,7 +2677,7 @@ pub mod aqua_dex {
             **ctx.accounts.owner.lamports.borrow_mut() = user_lamports;
 
             // Write result
-            if *acc_result.key != system_program::ID {
+            if *acc_result.key != ctx.accounts.owner.key() {
                 store_struct::<WithdrawResult>(&result, acc_result)?;
             }
 
@@ -2877,7 +2899,7 @@ pub mod aqua_dex {
         map_remove(sl, order_type, leaf.key())?;
         Order::free_index(sl, order_type, leaf.slot())?;
 
-        if *acc_result.key != system_program::ID {
+        if *acc_result.key != *acc_manager.key {
             store_struct::<WithdrawResult>(&result, acc_result)?;
         }
 
@@ -3013,7 +3035,7 @@ pub mod aqua_dex {
             map_remove(sl, DT::Account, log_node.key())?;
             AccountEntry::free_index(sl, DT::Account, log_node.slot())?;
             // Write result
-            if *acc_result.key != system_program::ID {
+            if *acc_result.key != ctx.accounts.manager.key() {
                 store_struct::<WithdrawResult>(&result, acc_result)?;
             }
 
