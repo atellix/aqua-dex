@@ -196,7 +196,7 @@ async function main() {
     console.log(await provider.sendAndConfirm(tx, [orders, settle1, settle2]))
 
     try {
-        await fs.writeFile('market_wsol_usdc_1.json', JSON.stringify(writeData, null, 4))
+        //await fs.writeFile('market_wsol_usdc_1.json', JSON.stringify(writeData, null, 4))
     } catch (error) {
         console.log("File Error: " + error)
     }

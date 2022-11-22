@@ -893,6 +893,8 @@ pub mod aqua_dex {
 
         msg!("Atellix: Allocate Settlement Log 1");
         let settle1_data: &mut[u8] = &mut acc_settle1.try_borrow_mut_data()?;
+        msg!("Atellix: Log header size: {}", size_of::<AccountsHeader>().to_string());
+        require!(false, ErrorCode::MarketClosed);
         let (settle1_top, settle1_pages) = mut_array_refs![settle1_data, size_of::<AccountsHeader>(); .. ;];
         let settle1_header: &mut [AccountsHeader] = cast_slice_mut(settle1_top);
         settle1_header[0] = AccountsHeader {
