@@ -234,7 +234,8 @@ async function main() {
         var userWallet = importSecretKey(user.secret)
         var userToken1 = await associatedTokenAddress(userWallet.publicKey, tokenMint1)
         var userToken2 = await associatedTokenAddress(userWallet.publicKey, tokenMint2)
-        console.log(await limitOrder('bid', userWallet, resultData1, 1 * (10**9), 15 * (10**6)))
+        //console.log(await limitOrder('bid', userWallet, resultData1, 1 * (10**9), 15 * (10**6)))
+        console.log(await limitOrder('ask', userWallet, resultData1, 1 * (10**9), 15 * (10**6)))
         var res = await aquadex.account.tradeResult.fetch(resultData1.publicKey)
         console.log(formatOrder(res))
 

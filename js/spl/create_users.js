@@ -31,7 +31,7 @@ async function storeUser(uid, kp) {
 
 async function main() {
     var users = []
-    for (var x = 0; x < 100; x++) {
+    for (var x = 0; x < 20; x++) {
         kp = anchor.web3.Keypair.generate()
         users.push({
             'pubkey': kp.publicKey.toString(),
