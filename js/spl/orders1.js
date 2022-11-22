@@ -119,6 +119,7 @@ async function readMarketSpec() {
     marketPK = new PublicKey(mktData.market)
     marketStatePK = new PublicKey(mktData.marketState)
     ordersPK = new PublicKey(mktData.orders)
+    tradeLogPK = new PublicKey(mktData.tradeLog)
     settle1PK = new PublicKey(mktData.settle1)
     settle2PK = new PublicKey(mktData.settle2)
     marketAgent = await programAddress([marketPK.toBuffer()])
@@ -144,6 +145,7 @@ async function limitOrder(orderType, user, result, qty, price) {
         accounts: {
             market: marketPK,
             state: marketStatePK,
+            tradeLog: tradeLogPK,
             agent: new PublicKey(marketAgent.pubkey),
             user: user.publicKey,
             userMktToken: new PublicKey(userToken1.pubkey),

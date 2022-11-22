@@ -194,6 +194,7 @@ async function main() {
                     market: marketPK,
                     state: marketStatePK,
                     agent: new PublicKey(marketAgent.pubkey),
+                    tradeLog: new PublicKey(mktData.tradeLog),
                     user: provider.wallet.publicKey,
                     userMktToken: new PublicKey(userToken1.pubkey),
                     userPrcToken: new PublicKey(userToken2.pubkey),
