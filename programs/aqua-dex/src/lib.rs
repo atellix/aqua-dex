@@ -156,6 +156,7 @@ impl AccountsHeader {
 pub struct AccountEntry {
     pub mkt_token_balance: u64,
     pub prc_token_balance: u64,
+    pub ts_updated: i64,
 }
 unsafe impl Zeroable for AccountEntry {}
 unsafe impl Pod for AccountEntry {}
@@ -169,12 +170,20 @@ impl AccountEntry {
         self.prc_token_balance
     }
 
+    pub fn ts_updated(&self) -> i64 {
+        self.ts_updated
+    }
+
     pub fn set_mkt_token_balance(&mut self, bal: u64) {
         self.mkt_token_balance = bal;
     }
 
     pub fn set_prc_token_balance(&mut self, bal: u64) {
         self.prc_token_balance = bal;
+    }
+
+    pub fn set_ts_updated(&mut self, ts: i64) {
+        self.ts_updated = ts;
     }
 
     fn next_index(pt: &mut SlabPageAlloc, data_type: DT) -> FnResult<u32, ProgramError> {
@@ -375,6 +384,8 @@ fn verify_matching_accounts(left: &Pubkey, right: &Pubkey, error_msg: Option<Str
 }
 
 fn settle_account(settle: &AccountInfo, owner_id: u128, owner: &Pubkey, mkt_token: bool, amount: u64) -> FnResult<u64, Error> {
+    let clock = Clock::get()?;
+    let clock_ts = clock.unix_timestamp;
     let new_balance: u64;
     let log_data: &mut[u8] = &mut settle.try_borrow_mut_data()?;
     let (header, page_table) = mut_array_refs![log_data, size_of::<AccountsHeader>(); .. ;];
@@ -399,6 +410,7 @@ fn settle_account(settle: &AccountInfo, owner_id: u128, owner: &Pubkey, mkt_toke
             let acct = AccountEntry {
                 mkt_token_balance: mkt_bal,
                 prc_token_balance: prc_bal,
+                ts_updated: clock_ts,
             };
             *sl.index_mut::<AccountEntry>(SettleDT::Account.into(), acct_idx as usize) = acct;
             settle_header[0].items = settle_header[0].items.checked_add(1).ok_or(error!(ErrorCode::Overflow))?;
@@ -410,13 +422,14 @@ fn settle_account(settle: &AccountInfo, owner_id: u128, owner: &Pubkey, mkt_toke
         let current_acct = sl.index::<AccountEntry>(SettleDT::Account.into(), log_item.slot() as usize);
         let mut mkt_bal: u64 = current_acct.mkt_token_balance;
         let mut prc_bal: u64 = current_acct.prc_token_balance;
+        let entry = sl.index_mut::<AccountEntry>(SettleDT::Account.into(), log_item.slot() as usize);
         if mkt_token {
             mkt_bal = mkt_bal.checked_add(amount).ok_or(error!(ErrorCode::Overflow))?;
-            sl.index_mut::<AccountEntry>(SettleDT::Account.into(), log_item.slot() as usize).set_mkt_token_balance(mkt_bal);
+            entry.set_mkt_token_balance(mkt_bal);
             new_balance = mkt_bal;
         } else {
             prc_bal = prc_bal.checked_add(amount).ok_or(error!(ErrorCode::Overflow))?;
-            sl.index_mut::<AccountEntry>(SettleDT::Account.into(), log_item.slot() as usize).set_prc_token_balance(prc_bal);
+            entry.set_prc_token_balance(prc_bal);
             new_balance = prc_bal;
         }
     }
@@ -483,7 +496,7 @@ fn log_settlement(
 
     msg!("atellix-log");
     emit!(SettleEvent {
-        event_type: 0,
+        event_type: 33111472894808803319726137140961827977, // solana/program/aqua-dex/settle_event
         action_id: state.action_counter,
         market: *market_key,
         owner: *owner,
@@ -1242,7 +1255,7 @@ pub mod aqua_dex {
                 );
                 msg!("atellix-log");
                 emit!(ExpireEvent {
-                    event_type: 0,
+                    event_type: 16332991664789055110548783525139174482, // solana/program/aqua-dex/expire_event
                     action_id: state_upd.action_counter,
                     market: market.key(),
                     owner: expire_leaf.owner(),
@@ -1377,7 +1390,7 @@ pub mod aqua_dex {
 
         msg!("atellix-log");
         emit!(OrderEvent {
-            event_type: 0,
+            event_type: 58862986463747312203336335289809479007, // solana/program/aqua-dex/limit_bid/order
             action_id: state_upd.action_counter,
             market: market.key(),
             user: acc_user.key(),
@@ -1622,7 +1635,7 @@ pub mod aqua_dex {
                 let expire_total = scale_price(expire_amount, expire_price, mkt_decimal_factor)?;
                 msg!("atellix-log");
                 emit!(ExpireEvent {
-                    event_type: 0,
+                    event_type: 16332991664789055110548783525139174482, // solana/program/aqua-dex/expire_event
                     action_id: state_upd.action_counter,
                     market: market.key(),
                     owner: expire_leaf.owner(),
@@ -1753,7 +1766,7 @@ pub mod aqua_dex {
 
         msg!("atellix-log");
         emit!(OrderEvent {
-            event_type: 0,
+            event_type: 295320270387787716737004386297471454892, // solana/program/aqua-dex/limit_ask/order
             action_id: state_upd.action_counter,
             market: market.key(),
             user: acc_user.key(),
@@ -2068,7 +2081,7 @@ pub mod aqua_dex {
                 );
                 msg!("atellix-log");
                 emit!(ExpireEvent {
-                    event_type: 0,
+                    event_type: 16332991664789055110548783525139174482, // solana/program/aqua-dex/expire_event
                     action_id: state_upd.action_counter,
                     market: market.key(),
                     owner: expire_leaf.owner(),
@@ -2155,7 +2168,7 @@ pub mod aqua_dex {
 
         msg!("atellix-log");
         emit!(OrderEvent {
-            event_type: 0,
+            event_type: 151919600483167167737000078670308605753, // solana/program/aqua-dex/market_bid/order
             action_id: state_upd.action_counter,
             market: market.key(),
             user: acc_user.key(),
@@ -2472,7 +2485,7 @@ pub mod aqua_dex {
                 let expire_total = scale_price(expire_amount, expire_price, mkt_decimal_factor)?;
                 msg!("atellix-log");
                 emit!(ExpireEvent {
-                    event_type: 0,
+                    event_type: 16332991664789055110548783525139174482, // solana/program/aqua-dex/expire_event
                     action_id: state_upd.action_counter,
                     market: market.key(),
                     owner: expire_leaf.owner(),
@@ -2562,7 +2575,7 @@ pub mod aqua_dex {
 
         msg!("atellix-log");
         emit!(OrderEvent {
-            event_type: 0,
+            event_type: 116790064293172396704069821733243480358, // solana/program/aqua-dex/market_ask/order
             action_id: state_upd.action_counter,
             market: market.key(),
             user: acc_user.key(),
@@ -2688,7 +2701,7 @@ pub mod aqua_dex {
 
         msg!("atellix-log");
         emit!(CancelEvent {
-            event_type: 0,
+            event_type: 80941766873992229586089855487021729071, // solana/program/aqua-dex/cancel_order
             action_id: state.action_counter,
             market: ctx.accounts.market.key(),
             owner: acc_owner.key(),
@@ -2800,7 +2813,7 @@ pub mod aqua_dex {
 
         msg!("atellix-log");
         emit!(WithdrawEvent {
-            event_type: 0,
+            event_type: 206836899720010235937021599972903459637, // solana/program/aqua-dex/withdraw
             action_id: state.action_counter,
             market: ctx.accounts.market.key(),
             owner: ctx.accounts.owner.key(),
@@ -2899,7 +2912,7 @@ pub mod aqua_dex {
 
             msg!("atellix-log");
             emit!(ExpireEvent {
-                event_type: 0,
+                event_type: 16332991664789055110548783525139174482, // solana/program/aqua-dex/expire_event
                 action_id: state_upd.action_counter,
                 market: market.key(),
                 owner: leaf.owner(),
@@ -3010,7 +3023,7 @@ pub mod aqua_dex {
 
         msg!("atellix-log");
         emit!(CancelEvent {
-            event_type: 0,
+            event_type: 149668793492806786255339444097076784738, // solana/program/aqua-dex/manager_cancel_order
             action_id: state.action_counter,
             market: ctx.accounts.market.key(),
             owner: order_owner,
@@ -3159,7 +3172,7 @@ pub mod aqua_dex {
 
         msg!("atellix-log");
         emit!(WithdrawEvent {
-            event_type: 0,
+            event_type: 246174444212986798995680456134066592430, // solana/program/aqua-dex/manager_withdraw
             action_id: state.action_counter,
             market: ctx.accounts.market.key(),
             owner: ctx.accounts.owner.key(),
@@ -3345,7 +3358,7 @@ pub mod aqua_dex {
 
             msg!("atellix-log");
             emit!(VaultDepositEvent {
-                event_type: 0,
+                event_type: 116949236330450057903776475751429156227, // solana/program/aqua-dex/user_vault/deposit
                 action_id: state.action_counter,
                 market: market.key(),
                 owner: *acc_owner.key,
@@ -3416,7 +3429,7 @@ pub mod aqua_dex {
 
             msg!("atellix-log");
             emit!(VaultWithdrawEvent {
-                event_type: 0,
+                event_type: 222531087088795477156040686028020078326, // solana/program/aqua-dex/user_vault/withdraw
                 action_id: state.action_counter,
                 market: market.key(),
                 owner: *acc_owner.key,
@@ -3494,7 +3507,7 @@ pub mod aqua_dex {
 
             msg!("atellix-log");
             emit!(VaultWithdrawEvent {
-                event_type: 0,
+                event_type: 155648231829618734246883800498177854177, // solana/program/aqua-dex/user_vault/manager_withdraw
                 action_id: state.action_counter,
                 market: market.key(),
                 owner: *acc_owner.key,
