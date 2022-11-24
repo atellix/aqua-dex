@@ -1120,6 +1120,7 @@ pub mod aqua_dex {
         let mut tokens_fee: u64 = 0;
         let mut expired_orders = Vec::new();
         let acc_trade_log = &ctx.accounts.trade_log.to_account_info();
+        verify_matching_accounts(&market.trade_log, &acc_trade_log.key, Some(String::from("Invalid trade log")))?;
         let trade_data: &mut[u8] = &mut acc_trade_log.try_borrow_mut_data()?;
         let tlog = SlabPageAlloc::new(trade_data);
         loop {
@@ -1499,6 +1500,7 @@ pub mod aqua_dex {
         let mut tokens_fee: u64 = 0;
         let mut expired_orders = Vec::new();
         let acc_trade_log = &ctx.accounts.trade_log.to_account_info();
+        verify_matching_accounts(&market.trade_log, &acc_trade_log.key, Some(String::from("Invalid trade log")))?;
         let trade_data: &mut[u8] = &mut acc_trade_log.try_borrow_mut_data()?;
         let tlog = SlabPageAlloc::new(trade_data);
         loop {
@@ -1855,6 +1857,7 @@ pub mod aqua_dex {
         let mut tokens_fee: u64 = 0;
         let mut expired_orders = Vec::new();
         let acc_trade_log = &ctx.accounts.trade_log.to_account_info();
+        verify_matching_accounts(&market.trade_log, &acc_trade_log.key, Some(String::from("Invalid trade log")))?;
         let trade_data: &mut[u8] = &mut acc_trade_log.try_borrow_mut_data()?;
         let tlog = SlabPageAlloc::new(trade_data);
         loop {
@@ -2257,6 +2260,7 @@ pub mod aqua_dex {
         let mut tokens_fee: u64 = 0;
         let mut expired_orders = Vec::new();
         let acc_trade_log = &ctx.accounts.trade_log.to_account_info();
+        verify_matching_accounts(&market.trade_log, &acc_trade_log.key, Some(String::from("Invalid trade log")))?;
         let trade_data: &mut[u8] = &mut acc_trade_log.try_borrow_mut_data()?;
         let tlog = SlabPageAlloc::new(trade_data);
         loop {
