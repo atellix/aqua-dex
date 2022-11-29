@@ -4,7 +4,7 @@ use bytemuck::{ Pod, Zeroable, cast_slice_mut, cast_slice };
 use num_enum::{ TryFromPrimitive, IntoPrimitive };
 use arrayref::{ mut_array_refs, array_refs };
 use anchor_lang::prelude::*;
-use anchor_spl::token::{ self, Transfer as SPL_Transfer, Token };
+use anchor_spl::token::{ self, Token, Transfer as SPL_Transfer, TokenAccount as SPL_TokenAccount };
 use anchor_spl::associated_token::{ self, AssociatedToken };
 use solana_program::{
     sysvar, system_program,
@@ -337,6 +337,12 @@ fn map_remove(pt: &mut SlabPageAlloc, data_type: DT, key: u128) -> anchor_lang::
 }
 
 #[inline]
+fn load_struct<T: AccountDeserialize>(acc: &AccountInfo) -> FnResult<T, ProgramError> {
+    let mut data: &[u8] = &acc.try_borrow_data()?;
+    Ok(T::try_deserialize(&mut data)?)
+}
+
+#[inline]
 fn store_struct<T: AccountSerialize>(obj: &T, acc: &AccountInfo) -> FnResult<(), Error> {
     let mut data = acc.try_borrow_mut_data()?;
     let dst: &mut [u8] = &mut data;
@@ -621,33 +627,49 @@ fn perform_transfer<'info>(
     mint_type: MintType,
     ast_offset: usize,
     amount: u64,
+    preview: bool,
     from: &AccountInfo<'info>,
     to: &AccountInfo<'info>,
     auth: &AccountInfo<'info>,
     spl_prog: &AccountInfo<'info>,
 ) -> anchor_lang::Result<()> {
     if mint_type == MintType::SPLToken {
-        let in_accounts = SPL_Transfer {
-            from: from.clone(),
-            to: to.clone(),
-            authority: auth.clone(),
-        };
-        let in_ctx = CpiContext::new(spl_prog.clone(), in_accounts);
-        token::transfer(in_ctx, amount)?;
-        return Ok(());
+        if preview {
+            let token_acct = load_struct::<SPL_TokenAccount>(&from.clone())?;
+            if token_acct.is_frozen() {
+                return Err(ErrorCode::ExternalError.into());
+            }
+            if token_acct.amount < amount {
+                return Err(ErrorCode::InsufficientTokens.into());
+            }
+            return Ok(());
+        } else {
+            let in_accounts = SPL_Transfer {
+                from: from.clone(),
+                to: to.clone(),
+                authority: auth.clone(),
+            };
+            let in_ctx = CpiContext::new(spl_prog.clone(), in_accounts);
+            token::transfer(in_ctx, amount)?;
+            return Ok(());
+        }
     } else if mint_type == MintType::AtxSecurityToken {
-        let ast_prog = accounts.get(ast_offset).unwrap().to_account_info();
-        require!(*ast_prog.key == security_token::ID, ErrorCode::InvalidParameters);
-        let in_accounts = AST_Transfer {
-            from: from.clone(),
-            from_auth: accounts.get(ast_offset + 1).unwrap().to_account_info(),
-            to: to.clone(),
-            to_auth: accounts.get(ast_offset + 2).unwrap().to_account_info(),
-            user: auth.clone(),
-        };
-        let in_ctx = CpiContext::new(ast_prog, in_accounts);
-        security_token::cpi::transfer(in_ctx, amount)?;
-        return Ok(());
+        if preview {
+            
+        } else {
+            let ast_prog = accounts.get(ast_offset).unwrap().to_account_info();
+            require!(*ast_prog.key == security_token::ID, ErrorCode::InvalidParameters);
+            let in_accounts = AST_Transfer {
+                from: from.clone(),
+                from_auth: accounts.get(ast_offset + 1).unwrap().to_account_info(),
+                to: to.clone(),
+                to_auth: accounts.get(ast_offset + 2).unwrap().to_account_info(),
+                user: auth.clone(),
+            };
+            let in_ctx = CpiContext::new(ast_prog, in_accounts);
+            security_token::cpi::transfer(in_ctx, amount)?;
+            return Ok(());
+        }
     }
     Err(error!(ErrorCode::InvalidParameters))
 }
@@ -1052,8 +1074,9 @@ pub mod aqua_dex {
         inp_post: bool,     // Post the order order to the orderbook, otherwise fill based on parameter below
         inp_fill: bool,     // Require orders that are not posted to be filled completely
         inp_expires: i64,   // Unix timestamp for order expiration (must be in the future, must exceed minimum duration)
+        inp_preview: bool,  // Preview execution and check taker token balance, but do not perform transfer
         inp_rollover: bool, // Perform settlement log rollover
-    ) -> anchor_lang::Result<()> {
+    ) -> anchor_lang::Result<TradeResult> {
         require!(inp_quantity > 0, ErrorCode::InvalidParameters);
         require!(inp_price > 0, ErrorCode::InvalidParameters);
         let clock = Clock::get()?;
@@ -1096,7 +1119,7 @@ pub mod aqua_dex {
 
         // Append a settlement log account
         let state_upd = &mut ctx.accounts.state;
-        if inp_rollover {
+        if inp_rollover && !inp_preview {
             if !state_upd.log_rollover {
                 // Another market participant already appended a new log account (please retry transaction)
                 msg!("Please update market data and retry");
@@ -1135,9 +1158,11 @@ pub mod aqua_dex {
         let mut tokens_in_calc: u128 = (inp_price as u128).checked_mul(inp_quantity as u128).ok_or(error!(ErrorCode::Overflow))?;
         tokens_in_calc = tokens_in_calc.checked_div(mkt_decimal_factor as u128).ok_or(error!(ErrorCode::Overflow))?;
         let tokens_in: u64 = u64::try_from(tokens_in_calc).map_err(|_| error!(ErrorCode::Overflow))?;
-        state_upd.action_counter = state_upd.action_counter.checked_add(1).ok_or(error!(ErrorCode::Overflow))?;
-        state_upd.prc_vault_balance = state_upd.prc_vault_balance.checked_add(tokens_in).ok_or(error!(ErrorCode::Overflow))?;
-        state_upd.prc_order_balance = state_upd.prc_order_balance.checked_add(tokens_in).ok_or(error!(ErrorCode::Overflow))?;
+        if !inp_preview {
+            state_upd.action_counter = state_upd.action_counter.checked_add(1).ok_or(error!(ErrorCode::Overflow))?;
+            state_upd.prc_vault_balance = state_upd.prc_vault_balance.checked_add(tokens_in).ok_or(error!(ErrorCode::Overflow))?;
+            state_upd.prc_order_balance = state_upd.prc_order_balance.checked_add(tokens_in).ok_or(error!(ErrorCode::Overflow))?;
+        }
 
         let orderbook_data: &mut[u8] = &mut acc_orders.try_borrow_mut_data()?;
         let ob = SlabPageAlloc::new(orderbook_data);
@@ -1173,25 +1198,27 @@ pub mod aqua_dex {
                     tokens_paid = tokens_paid.checked_add(tokens_part).ok_or(error!(ErrorCode::Overflow))?;
                     tokens_fee = tokens_fee.checked_add(calculate_fee(market.taker_fee, tokens_part)?).ok_or(error!(ErrorCode::Overflow))?;
                     msg!("Atellix: Filling - {} @ {}", tokens_part.to_string(), posted_price.to_string());
-                    log_trade(tlog,
-                        207368829214137069500050352632921761096, // solana/program/aqua-dex/limit_bid/match/exact
-                        state_upd.action_counter,
-                        &market.key(),
-                        posted_node.key(),
-                        true,
-                        &posted_node.owner(),
-                        &acc_user.key(),
-                        Side::Bid as u8,
-                        tokens_to_fill,
-                        posted_price,
-                        clock_ts
-                    )?;
-                    map_remove(ob, DT::AskOrder, posted_node.key())?;
-                    Order::free_index(ob, DT::AskOrder, posted_node.slot())?;
-                    log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &posted_node.owner(), false, tokens_part)?;
-                    state_upd.active_ask = state_upd.active_ask.checked_sub(1).ok_or(error!(ErrorCode::Overflow))?;
-                    state_upd.last_price = posted_price;
-                    state_upd.last_ts = clock_ts;
+                    if !inp_preview {
+                        log_trade(tlog,
+                            207368829214137069500050352632921761096, // solana/program/aqua-dex/limit_bid/match/exact
+                            state_upd.action_counter,
+                            &market.key(),
+                            posted_node.key(),
+                            true,
+                            &posted_node.owner(),
+                            &acc_user.key(),
+                            Side::Bid as u8,
+                            tokens_to_fill,
+                            posted_price,
+                            clock_ts
+                        )?;
+                        map_remove(ob, DT::AskOrder, posted_node.key())?;
+                        Order::free_index(ob, DT::AskOrder, posted_node.slot())?;
+                        state_upd.active_ask = state_upd.active_ask.checked_sub(1).ok_or(error!(ErrorCode::Overflow))?;
+                        state_upd.last_price = posted_price;
+                        state_upd.last_ts = clock_ts;
+                        log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &posted_node.owner(), false, tokens_part)?;
+                    }
                     break;
                 } else if posted_qty < tokens_to_fill {   // Match the entire order and continue
                     tokens_to_fill = tokens_to_fill.checked_sub(posted_qty).ok_or(error!(ErrorCode::Overflow))?;
@@ -1200,49 +1227,53 @@ pub mod aqua_dex {
                     tokens_paid = tokens_paid.checked_add(tokens_part).ok_or(error!(ErrorCode::Overflow))?;
                     tokens_fee = tokens_fee.checked_add(calculate_fee(market.taker_fee, tokens_part)?).ok_or(error!(ErrorCode::Overflow))?;
                     msg!("Atellix: Filling - {} @ {}", posted_qty.to_string(), posted_price.to_string());
-                    log_trade(tlog,
-                        227168296477409633500015956081940497570, // solana/program/aqua-dex/limit_bid/match/entire
-                        state_upd.action_counter,
-                        &market.key(),
-                        posted_node.key(),
-                        true,
-                        &posted_node.owner(),
-                        &acc_user.key(),
-                        Side::Bid as u8,
-                        posted_qty,
-                        posted_price,
-                        clock_ts
-                    )?;
-                    map_remove(ob, DT::AskOrder, posted_node.key())?;
-                    Order::free_index(ob, DT::AskOrder, posted_node.slot())?;
-                    log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &posted_node.owner(), false, tokens_part)?;
-                    state_upd.active_ask = state_upd.active_ask.checked_sub(1).ok_or(error!(ErrorCode::Overflow))?;
-                    state_upd.last_price = posted_price;
-                    state_upd.last_ts = clock_ts;
+                    if !inp_preview {
+                        log_trade(tlog,
+                            227168296477409633500015956081940497570, // solana/program/aqua-dex/limit_bid/match/entire
+                            state_upd.action_counter,
+                            &market.key(),
+                            posted_node.key(),
+                            true,
+                            &posted_node.owner(),
+                            &acc_user.key(),
+                            Side::Bid as u8,
+                            posted_qty,
+                            posted_price,
+                            clock_ts
+                        )?;
+                        map_remove(ob, DT::AskOrder, posted_node.key())?;
+                        Order::free_index(ob, DT::AskOrder, posted_node.slot())?;
+                        state_upd.active_ask = state_upd.active_ask.checked_sub(1).ok_or(error!(ErrorCode::Overflow))?;
+                        state_upd.last_price = posted_price;
+                        state_upd.last_ts = clock_ts;
+                        log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &posted_node.owner(), false, tokens_part)?;
+                    }
                 } else if posted_qty > tokens_to_fill {   // Match part of the order
                     tokens_filled = tokens_filled.checked_add(tokens_to_fill).ok_or(error!(ErrorCode::Overflow))?;
                     let tokens_part = scale_price(tokens_to_fill, posted_price, mkt_decimal_factor)?;
                     tokens_paid = tokens_paid.checked_add(tokens_part).ok_or(error!(ErrorCode::Overflow))?;
                     tokens_fee = tokens_fee.checked_add(calculate_fee(market.taker_fee, tokens_part)?).ok_or(error!(ErrorCode::Overflow))?;
                     msg!("Atellix: Filling - {} @ {}", tokens_to_fill.to_string(), posted_price.to_string());
-                    log_trade(tlog,
-                        94062763214239030578622318919331863353, // solana/program/aqua-dex/limit_bid/match/partial
-                        state_upd.action_counter,
-                        &market.key(),
-                        posted_node.key(),
-                        false,
-                        &posted_node.owner(),
-                        &acc_user.key(),
-                        Side::Bid as u8,
-                        tokens_to_fill,
-                        posted_price,
-                        clock_ts
-                    )?;
-                    let new_amount = posted_qty.checked_sub(tokens_to_fill).ok_or(error!(ErrorCode::Overflow))?;
-                    ob.index_mut::<Order>(OrderDT::AskOrder as u16, posted_node.slot() as usize).set_amount(new_amount);
-                    log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &posted_node.owner(), false, tokens_part)?;
-                    state_upd.last_price = posted_price;
-                    state_upd.last_ts = clock_ts;
+                    if !inp_preview {
+                        log_trade(tlog,
+                            94062763214239030578622318919331863353, // solana/program/aqua-dex/limit_bid/match/partial
+                            state_upd.action_counter,
+                            &market.key(),
+                            posted_node.key(),
+                            false,
+                            &posted_node.owner(),
+                            &acc_user.key(),
+                            Side::Bid as u8,
+                            tokens_to_fill,
+                            posted_price,
+                            clock_ts
+                        )?;
+                        let new_amount = posted_qty.checked_sub(tokens_to_fill).ok_or(error!(ErrorCode::Overflow))?;
+                        ob.index_mut::<Order>(OrderDT::AskOrder as u16, posted_node.slot() as usize).set_amount(new_amount);
+                        state_upd.last_price = posted_price;
+                        state_upd.last_ts = clock_ts;
+                        log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &posted_node.owner(), false, tokens_part)?;
+                    }
                     break;
                 }
             } else {
@@ -1253,39 +1284,41 @@ pub mod aqua_dex {
 
         msg!("Atellix: Fee: {}", tokens_fee.to_string());
 
-        let mut expired_count: u32 = 0;
-        if expired_orders.len() > 0 {
-            loop {
-                if expired_orders.len() == 0 || expired_count == MAX_EXPIRATIONS {
-                    break;
+        if !inp_preview {
+            let mut expired_count: u32 = 0;
+            if expired_orders.len() > 0 {
+                loop {
+                    if expired_orders.len() == 0 || expired_count == MAX_EXPIRATIONS {
+                        break;
+                    }
+                    let expired_id: u128 = expired_orders.pop().unwrap();
+                    let expire_leaf = map_get(ob, DT::AskOrder, expired_id).unwrap();
+                    let expire_order = *ob.index::<Order>(OrderDT::AskOrder as u16, expire_leaf.slot() as usize);
+                    let expire_amount: u64 = expire_order.amount();
+                    msg!("Atellix: Expired Order[{}] - Owner: {} {} @ {}",
+                        expire_leaf.slot().to_string(),
+                        expire_leaf.owner().to_string(),
+                        expire_order.amount().to_string(),
+                        Order::price(expire_leaf.key()).to_string(),
+                    );
+                    msg!("atellix-log");
+                    emit!(ExpireEvent {
+                        event_type: 16332991664789055110548783525139174482, // solana/program/aqua-dex/expire_event
+                        action_id: state_upd.action_counter,
+                        market: market.key(),
+                        owner: expire_leaf.owner(),
+                        order_side: Side::Ask as u8,
+                        order_id: expired_id,
+                        price: Order::price(expire_leaf.key()),
+                        quantity: expire_amount,
+                        tokens: expire_amount,
+                    });
+                    log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &expire_leaf.owner(), true, expire_amount)?; // No multiply for Ask order
+                    map_remove(ob, DT::AskOrder, expire_leaf.key())?;
+                    Order::free_index(ob, DT::AskOrder, expire_leaf.slot())?;
+                    state_upd.active_ask = state_upd.active_ask.checked_sub(1).ok_or(error!(ErrorCode::Overflow))?;
+                    expired_count = expired_count + 1;
                 }
-                let expired_id: u128 = expired_orders.pop().unwrap();
-                let expire_leaf = map_get(ob, DT::AskOrder, expired_id).unwrap();
-                let expire_order = *ob.index::<Order>(OrderDT::AskOrder as u16, expire_leaf.slot() as usize);
-                let expire_amount: u64 = expire_order.amount();
-                msg!("Atellix: Expired Order[{}] - Owner: {} {} @ {}",
-                    expire_leaf.slot().to_string(),
-                    expire_leaf.owner().to_string(),
-                    expire_order.amount().to_string(),
-                    Order::price(expire_leaf.key()).to_string(),
-                );
-                msg!("atellix-log");
-                emit!(ExpireEvent {
-                    event_type: 16332991664789055110548783525139174482, // solana/program/aqua-dex/expire_event
-                    action_id: state_upd.action_counter,
-                    market: market.key(),
-                    owner: expire_leaf.owner(),
-                    order_side: Side::Ask as u8,
-                    order_id: expired_id,
-                    price: Order::price(expire_leaf.key()),
-                    quantity: expire_amount,
-                    tokens: expire_amount,
-                });
-                log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &expire_leaf.owner(), true, expire_amount)?; // No multiply for Ask order
-                map_remove(ob, DT::AskOrder, expire_leaf.key())?;
-                Order::free_index(ob, DT::AskOrder, expire_leaf.slot())?;
-                state_upd.active_ask = state_upd.active_ask.checked_sub(1).ok_or(error!(ErrorCode::Overflow))?;
-                expired_count = expired_count + 1;
             }
         }
 
@@ -1298,43 +1331,47 @@ pub mod aqua_dex {
             return Err(ErrorCode::OrderNotFilled.into());
         }
         if tokens_remaining > 0 && inp_post {
-            let order_id = Order::new_key(state_upd, Side::Bid, inp_price);
-            let order_idx = Order::next_index(ob, DT::BidOrder)?;
-            let order_node = LeafNode::new(order_id, order_idx, &acc_user.key);
-            let order = Order { amount: tokens_remaining, expiry: expiry };
-            let mut eviction_count: u32 = 0;
-            loop {
-                let entry = map_insert(ob, DT::BidOrder, &order_node);
-                if entry.is_err() {
-                    // Evict orders if necessary
-                    if eviction_count == MAX_EVICTIONS {
-                        msg!("Failed to add order");
-                        return Err(ErrorCode::InternalError.into());
+            let mut order_id: u128 = u128::MAX;
+            let mut order_idx: u32 = 1;
+            if !inp_preview {
+                order_id = Order::new_key(state_upd, Side::Bid, inp_price);
+                order_idx = Order::next_index(ob, DT::BidOrder)?;
+                let order_node = LeafNode::new(order_id, order_idx, &acc_user.key);
+                let order = Order { amount: tokens_remaining, expiry: expiry };
+                let mut eviction_count: u32 = 0;
+                loop {
+                    let entry = map_insert(ob, DT::BidOrder, &order_node);
+                    if entry.is_err() {
+                        // Evict orders if necessary
+                        if eviction_count == MAX_EVICTIONS {
+                            msg!("Failed to add order");
+                            return Err(ErrorCode::InternalError.into());
+                        }
+                        let evict_node = map_min(ob, DT::BidOrder).unwrap();
+                        let evict_order = ob.index::<Order>(OrderDT::BidOrder as u16, evict_node.slot() as usize);
+                        // Only evict if the price is better
+                        if inp_price <= Order::price(evict_node.key()) {
+                            msg!("Atellix: Orderbook Full - Price Does Not Exceed Evicted Order");
+                            return Err(ErrorCode::OrderbookFull.into());
+                        }
+                        let evict_amount: u64 = evict_order.amount();
+                        msg!("Atellix: Evicting Order[{}] - Owner: {} {} @ {}",
+                            evict_node.slot().to_string(),
+                            evict_node.owner().to_string(),
+                            evict_order.amount().to_string(),
+                            Order::price(evict_node.key()).to_string(),
+                        );
+                        let evict_total = evict_amount.checked_mul(Order::price(evict_node.key())).ok_or(error!(ErrorCode::Overflow))?;
+                        log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &evict_node.owner(), false, evict_total)?;
+                        map_remove(ob, DT::BidOrder, evict_node.key())?;
+                        Order::free_index(ob, DT::BidOrder, evict_node.slot())?;
+                        state_upd.active_bid = state_upd.active_bid.checked_sub(1).ok_or(error!(ErrorCode::Overflow))?;
+                        eviction_count = eviction_count + 1;
+                    } else {
+                        *ob.index_mut::<Order>(OrderDT::BidOrder.into(), order_idx as usize) = order;
+                        state_upd.active_bid = state_upd.active_bid.checked_add(1).ok_or(error!(ErrorCode::Overflow))?;
+                        break;
                     }
-                    let evict_node = map_min(ob, DT::BidOrder).unwrap();
-                    let evict_order = ob.index::<Order>(OrderDT::BidOrder as u16, evict_node.slot() as usize);
-                    // Only evict if the price is better
-                    if inp_price <= Order::price(evict_node.key()) {
-                        msg!("Atellix: Orderbook Full - Price Does Not Exceed Evicted Order");
-                        return Err(ErrorCode::OrderbookFull.into());
-                    }
-                    let evict_amount: u64 = evict_order.amount();
-                    msg!("Atellix: Evicting Order[{}] - Owner: {} {} @ {}",
-                        evict_node.slot().to_string(),
-                        evict_node.owner().to_string(),
-                        evict_order.amount().to_string(),
-                        Order::price(evict_node.key()).to_string(),
-                    );
-                    let evict_total = evict_amount.checked_mul(Order::price(evict_node.key())).ok_or(error!(ErrorCode::Overflow))?;
-                    log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &evict_node.owner(), false, evict_total)?;
-                    map_remove(ob, DT::BidOrder, evict_node.key())?;
-                    Order::free_index(ob, DT::BidOrder, evict_node.slot())?;
-                    state_upd.active_bid = state_upd.active_bid.checked_sub(1).ok_or(error!(ErrorCode::Overflow))?;
-                    eviction_count = eviction_count + 1;
-                } else {
-                    *ob.index_mut::<Order>(OrderDT::BidOrder.into(), order_idx as usize) = order;
-                    state_upd.active_bid = state_upd.active_bid.checked_add(1).ok_or(error!(ErrorCode::Overflow))?;
-                    break;
                 }
             }
             let tokens_part = scale_price(tokens_remaining, inp_price, mkt_decimal_factor)?;
@@ -1346,32 +1383,34 @@ pub mod aqua_dex {
         let discount = tokens_in.checked_sub(tokens_paid).ok_or(error!(ErrorCode::Overflow))?;
         msg!("Atellix: Discount: {}", discount.to_string());
         let mut total_cost = tokens_in.checked_sub(discount).ok_or(error!(ErrorCode::Overflow))?;
-        state_upd.prc_vault_balance = state_upd.prc_vault_balance.checked_sub(discount).ok_or(error!(ErrorCode::Overflow))?;
-        state_upd.prc_order_balance = state_upd.prc_order_balance.checked_sub(discount).ok_or(error!(ErrorCode::Overflow))?;
-
-        // Apply fees
         total_cost = total_cost.checked_add(tokens_fee).ok_or(error!(ErrorCode::Overflow))?;
-        state_upd.prc_vault_balance = state_upd.prc_vault_balance.checked_add(tokens_fee).ok_or(error!(ErrorCode::Overflow))?;
-        state_upd.prc_fees_balance = state_upd.prc_fees_balance.checked_add(tokens_fee).ok_or(error!(ErrorCode::Overflow))?;
+        if !inp_preview {
+            state_upd.prc_vault_balance = state_upd.prc_vault_balance.checked_sub(discount).ok_or(error!(ErrorCode::Overflow))?;
+            state_upd.prc_order_balance = state_upd.prc_order_balance.checked_sub(discount).ok_or(error!(ErrorCode::Overflow))?;
 
-        /*msg!("Atellix: Pricing Token Vault Deposit: {}", total_cost.to_string());
-        msg!("Atellix: Pricing Token Vault Balance: {} (Orderbook: {})",
-            state_upd.prc_vault_balance,
-            state_upd.prc_order_balance,
-        );*/
+            // Apply fees
+            state_upd.prc_vault_balance = state_upd.prc_vault_balance.checked_add(tokens_fee).ok_or(error!(ErrorCode::Overflow))?;
+            state_upd.prc_fees_balance = state_upd.prc_fees_balance.checked_add(tokens_fee).ok_or(error!(ErrorCode::Overflow))?;
 
-        // Deposit lamports for settlement log space
-        let mut user_lamports = ctx.accounts.user.lamports();
-        user_lamports = user_lamports.checked_sub(market.log_fee).ok_or(error!(ErrorCode::Overflow))?;
-        **ctx.accounts.user.lamports.borrow_mut() = user_lamports;
-        let mut market_lamports = state_upd.to_account_info().lamports();
-        market_lamports = market_lamports.checked_add(market.log_fee).ok_or(error!(ErrorCode::Overflow))?;
-        **state_upd.to_account_info().lamports.borrow_mut() = market_lamports;
-        state_upd.log_deposit_balance = state_upd.log_deposit_balance.checked_add(market.log_fee).ok_or(error!(ErrorCode::Overflow))?;
+            /*msg!("Atellix: Pricing Token Vault Deposit: {}", total_cost.to_string());
+            msg!("Atellix: Pricing Token Vault Balance: {} (Orderbook: {})",
+                state_upd.prc_vault_balance,
+                state_upd.prc_order_balance,
+            );*/
+
+            // Deposit lamports for settlement log space
+            let mut user_lamports = ctx.accounts.user.lamports();
+            user_lamports = user_lamports.checked_sub(market.log_fee).ok_or(error!(ErrorCode::Overflow))?;
+            **ctx.accounts.user.lamports.borrow_mut() = user_lamports;
+            let mut market_lamports = state_upd.to_account_info().lamports();
+            market_lamports = market_lamports.checked_add(market.log_fee).ok_or(error!(ErrorCode::Overflow))?;
+            **state_upd.to_account_info().lamports.borrow_mut() = market_lamports;
+            state_upd.log_deposit_balance = state_upd.log_deposit_balance.checked_add(market.log_fee).ok_or(error!(ErrorCode::Overflow))?;
+        }
 
         // Send tokens to the vault
         let mint_type = MintType::try_from(market.prc_mint_type).map_err(|_| ErrorCode::InvalidParameters)?;
-        perform_transfer(ctx.remaining_accounts, mint_type, 0, total_cost,
+        perform_transfer(ctx.remaining_accounts, mint_type, 0, total_cost, inp_preview,
             &ctx.accounts.user_prc_token.to_account_info(),  // From
             &ctx.accounts.prc_vault.to_account_info(),       // To
             &ctx.accounts.user.to_account_info(),            // Auth
@@ -1379,7 +1418,7 @@ pub mod aqua_dex {
         )?;
         result.set_tokens_sent(total_cost);
 
-        if tokens_filled > 0 {
+        if tokens_filled > 0 && !inp_preview {
             // Withdraw tokens from the vault
             state_upd.mkt_vault_balance = state_upd.mkt_vault_balance.checked_sub(tokens_filled).ok_or(error!(ErrorCode::Overflow))?;
             state_upd.mkt_order_balance = state_upd.mkt_order_balance.checked_sub(tokens_filled).ok_or(error!(ErrorCode::Overflow))?;
@@ -1404,28 +1443,30 @@ pub mod aqua_dex {
             store_struct::<TradeResult>(&result, acc_result)?;
         }
 
-        msg!("atellix-log");
-        emit!(OrderEvent {
-            event_type: 58862986463747312203336335289809479007, // solana/program/aqua-dex/limit_bid/order
-            action_id: state_upd.action_counter,
-            market: market.key(),
-            user: acc_user.key(),
-            market_token: ctx.accounts.user_mkt_token.key(),
-            pricing_token: ctx.accounts.user_prc_token.key(),
-            order_id: result.order_id,
-            order_side: Side::Bid as u8,
-            filled: tokens_remaining == 0,
-            tokens_received: result.tokens_received,
-            tokens_sent: result.tokens_sent,
-            tokens_fee: result.tokens_fee,
-            posted: result.posted_quantity > 0,
-            posted_quantity: result.posted_quantity,
-            order_price: inp_price,
-            order_quantity: inp_quantity,
-            expires: expiry,
-        });
+        if !inp_preview {
+            msg!("atellix-log");
+            emit!(OrderEvent {
+                event_type: 58862986463747312203336335289809479007, // solana/program/aqua-dex/limit_bid/order
+                action_id: state_upd.action_counter,
+                market: market.key(),
+                user: acc_user.key(),
+                market_token: ctx.accounts.user_mkt_token.key(),
+                pricing_token: ctx.accounts.user_prc_token.key(),
+                order_id: result.order_id,
+                order_side: Side::Bid as u8,
+                filled: tokens_remaining == 0,
+                tokens_received: result.tokens_received,
+                tokens_sent: result.tokens_sent,
+                tokens_fee: result.tokens_fee,
+                posted: result.posted_quantity > 0,
+                posted_quantity: result.posted_quantity,
+                order_price: inp_price,
+                order_quantity: inp_quantity,
+                expires: expiry,
+            });
+        }
 
-        Ok(())
+        Ok(result)
     }
 
     pub fn limit_ask<'a, 'b, 'c, 'info>(ctx: Context<'a, 'b, 'c, 'info, OrderContext<'info>>,
@@ -1434,8 +1475,9 @@ pub mod aqua_dex {
         inp_post: bool,     // Post the order order to the orderbook, otherwise fill based on parameter below
         inp_fill: bool,     // Require orders that are not posted to be filled completely
         inp_expires: i64,   // Unix timestamp for order expiration (must be in the future, must exceed minimum duration)
+        inp_preview: bool,  // Preview mode
         inp_rollover: bool, // Perform settlement log rollover
-    ) -> anchor_lang::Result<()> {
+    ) -> anchor_lang::Result<TradeResult> {
         require!(inp_quantity > 0, ErrorCode::InvalidParameters);
         require!(inp_price > 0, ErrorCode::InvalidParameters);
         let clock = Clock::get()?;
@@ -1478,7 +1520,7 @@ pub mod aqua_dex {
 
         // Append a settlement log account
         let state_upd = &mut ctx.accounts.state;
-        if inp_rollover {
+        if inp_rollover && !inp_preview {
             if !state_upd.log_rollover {
                 // Another market participant already appended a new log account (please retry transaction)
                 msg!("Please update market data and retry");
@@ -1512,9 +1554,11 @@ pub mod aqua_dex {
 
         msg!("Atellix: Limit Ask: {} @ {}", inp_quantity.to_string(), inp_price.to_string());
 
-        state_upd.action_counter = state_upd.action_counter.checked_add(1).ok_or(error!(ErrorCode::Overflow))?;
-        state_upd.mkt_vault_balance = state_upd.mkt_vault_balance.checked_add(inp_quantity).ok_or(error!(ErrorCode::Overflow))?;
-        state_upd.mkt_order_balance = state_upd.mkt_order_balance.checked_add(inp_quantity).ok_or(error!(ErrorCode::Overflow))?;
+        if !inp_preview {
+            state_upd.action_counter = state_upd.action_counter.checked_add(1).ok_or(error!(ErrorCode::Overflow))?;
+            state_upd.mkt_vault_balance = state_upd.mkt_vault_balance.checked_add(inp_quantity).ok_or(error!(ErrorCode::Overflow))?;
+            state_upd.mkt_order_balance = state_upd.mkt_order_balance.checked_add(inp_quantity).ok_or(error!(ErrorCode::Overflow))?;
+        }
 
         let orderbook_data: &mut[u8] = &mut acc_orders.try_borrow_mut_data()?;
         let ob = SlabPageAlloc::new(orderbook_data);
@@ -1553,24 +1597,27 @@ pub mod aqua_dex {
                     tokens_received = tokens_received.checked_add(tokens_part).ok_or(error!(ErrorCode::Overflow))?;
                     tokens_fee = tokens_fee.checked_add(calculate_fee(market.taker_fee, tokens_part)?).ok_or(error!(ErrorCode::Overflow))?;
                     msg!("Atellix: Filling - {} @ {}", tokens_part.to_string(), posted_price.to_string());
-                    log_trade(tlog,
-                        325819153524900178081877579778492284961, // solana/program/aqua-dex/limit_ask/match/exact
-                        state_upd.action_counter,
-                        &market.key(),
-                        posted_node.key(),
-                        true,
-                        &posted_node.owner(),
-                        &acc_user.key(),
-                        Side::Ask as u8,
-                        tokens_to_fill,
-                        posted_price,
-                        clock_ts
-                    )?;
-                    map_remove(ob, DT::BidOrder, posted_node.key())?;
-                    Order::free_index(ob, DT::BidOrder, posted_node.slot())?;
-                    log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &posted_node.owner(), true, tokens_to_fill)?;
-                    state_upd.last_price = posted_price;
-                    state_upd.last_ts = clock_ts;
+                    if !inp_preview {
+                        log_trade(tlog,
+                            325819153524900178081877579778492284961, // solana/program/aqua-dex/limit_ask/match/exact
+                            state_upd.action_counter,
+                            &market.key(),
+                            posted_node.key(),
+                            true,
+                            &posted_node.owner(),
+                            &acc_user.key(),
+                            Side::Ask as u8,
+                            tokens_to_fill,
+                            posted_price,
+                            clock_ts
+                        )?;
+                        map_remove(ob, DT::BidOrder, posted_node.key())?;
+                        Order::free_index(ob, DT::BidOrder, posted_node.slot())?;
+                        state_upd.active_bid = state_upd.active_bid.checked_sub(1).ok_or(error!(ErrorCode::Overflow))?;
+                        state_upd.last_price = posted_price;
+                        state_upd.last_ts = clock_ts;
+                        log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &posted_node.owner(), true, tokens_to_fill)?;
+                    }
                     break;
                 } else if posted_qty < tokens_to_fill {   // Match the entire order and continue
                     tokens_to_fill = tokens_to_fill.checked_sub(posted_qty).ok_or(error!(ErrorCode::Overflow))?;
@@ -1579,48 +1626,53 @@ pub mod aqua_dex {
                     tokens_received = tokens_received.checked_add(tokens_part).ok_or(error!(ErrorCode::Overflow))?;
                     tokens_fee = tokens_fee.checked_add(calculate_fee(market.taker_fee, tokens_part)?).ok_or(error!(ErrorCode::Overflow))?;
                     msg!("Atellix: Filling - {} @ {}", posted_qty.to_string(), posted_price.to_string());
-                    log_trade(tlog,
-                        114544905925567569513505448268003180936, // solana/program/aqua-dex/limit_ask/match/entire
-                        state_upd.action_counter,
-                        &market.key(),
-                        posted_node.key(),
-                        true,
-                        &posted_node.owner(),
-                        &acc_user.key(),
-                        Side::Ask as u8,
-                        posted_qty,
-                        posted_price,
-                        clock_ts
-                    )?;
-                    map_remove(ob, DT::BidOrder, posted_node.key())?;
-                    Order::free_index(ob, DT::BidOrder, posted_node.slot())?;
-                    log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &posted_node.owner(), true, posted_qty)?;
-                    state_upd.last_price = posted_price;
-                    state_upd.last_ts = clock_ts;
+                    if !inp_preview {
+                        log_trade(tlog,
+                            114544905925567569513505448268003180936, // solana/program/aqua-dex/limit_ask/match/entire
+                            state_upd.action_counter,
+                            &market.key(),
+                            posted_node.key(),
+                            true,
+                            &posted_node.owner(),
+                            &acc_user.key(),
+                            Side::Ask as u8,
+                            posted_qty,
+                            posted_price,
+                            clock_ts
+                        )?;
+                        map_remove(ob, DT::BidOrder, posted_node.key())?;
+                        Order::free_index(ob, DT::BidOrder, posted_node.slot())?;
+                        state_upd.active_bid = state_upd.active_bid.checked_sub(1).ok_or(error!(ErrorCode::Overflow))?;
+                        state_upd.last_price = posted_price;
+                        state_upd.last_ts = clock_ts;
+                        log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &posted_node.owner(), true, posted_qty)?;
+                    }
                 } else if posted_qty > tokens_to_fill {   // Match part of the order
                     tokens_filled = tokens_filled.checked_add(tokens_to_fill).ok_or(error!(ErrorCode::Overflow))?;
                     let tokens_part = scale_price(tokens_to_fill, posted_price, mkt_decimal_factor)?;
                     tokens_received = tokens_received.checked_add(tokens_part).ok_or(error!(ErrorCode::Overflow))?;
                     tokens_fee = tokens_fee.checked_add(calculate_fee(market.taker_fee, tokens_part)?).ok_or(error!(ErrorCode::Overflow))?;
                     msg!("Atellix: Filling - {} @ {}", tokens_to_fill.to_string(), posted_price.to_string());
-                    log_trade(tlog,
-                        282510189476950091999666304965232626740, // solana/program/aqua-dex/limit_ask/match/partial
-                        state_upd.action_counter,
-                        &market.key(),
-                        posted_node.key(),
-                        false,
-                        &posted_node.owner(),
-                        &acc_user.key(),
-                        Side::Ask as u8,
-                        tokens_to_fill,
-                        posted_price,
-                        clock_ts
-                    )?;
-                    let new_amount = posted_qty.checked_sub(tokens_to_fill).ok_or(error!(ErrorCode::Overflow))?;
-                    ob.index_mut::<Order>(OrderDT::BidOrder as u16, posted_node.slot() as usize).set_amount(new_amount);
-                    log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &posted_node.owner(), true, tokens_to_fill)?;
-                    state_upd.last_price = posted_price;
-                    state_upd.last_ts = clock_ts;
+                    if !inp_preview {
+                        log_trade(tlog,
+                            282510189476950091999666304965232626740, // solana/program/aqua-dex/limit_ask/match/partial
+                            state_upd.action_counter,
+                            &market.key(),
+                            posted_node.key(),
+                            false,
+                            &posted_node.owner(),
+                            &acc_user.key(),
+                            Side::Ask as u8,
+                            tokens_to_fill,
+                            posted_price,
+                            clock_ts
+                        )?;
+                        let new_amount = posted_qty.checked_sub(tokens_to_fill).ok_or(error!(ErrorCode::Overflow))?;
+                        ob.index_mut::<Order>(OrderDT::BidOrder as u16, posted_node.slot() as usize).set_amount(new_amount);
+                        log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &posted_node.owner(), true, tokens_to_fill)?;
+                        state_upd.last_price = posted_price;
+                        state_upd.last_ts = clock_ts;
+                    }
                     break;
                 }
             } else {
@@ -1632,7 +1684,7 @@ pub mod aqua_dex {
         msg!("Atellix: Fee: {}", tokens_fee.to_string());
 
         let mut expired_count: u32 = 0;
-        if expired_orders.len() > 0 {
+        if expired_orders.len() > 0 && !inp_preview {
             loop {
                 if expired_orders.len() == 0 || expired_count == MAX_EXPIRATIONS {
                     break;
@@ -1679,42 +1731,46 @@ pub mod aqua_dex {
         }
         if tokens_remaining > 0 && inp_post {
             // Add order to orderbook
-            let order_id = Order::new_key(state_upd, Side::Ask, inp_price);
-            let order_idx = Order::next_index(ob, DT::AskOrder)?;
-            let order_node = LeafNode::new(order_id, order_idx, &acc_user.key);
-            let order = Order { amount: tokens_remaining, expiry: expiry };
-            let mut eviction_count: u32 = 0;
-            loop {
-                let entry = map_insert(ob, DT::AskOrder, &order_node);
-                if entry.is_err() {
-                    // Evict orders if necessary
-                    if eviction_count == MAX_EVICTIONS {
-                        msg!("Failed to add order");
-                        return Err(ErrorCode::InternalError.into());
+            let mut order_id: u128 = u128::MAX;
+            let mut order_idx: u32 = 1;
+            if !inp_preview {
+                order_id = Order::new_key(state_upd, Side::Ask, inp_price);
+                order_idx = Order::next_index(ob, DT::AskOrder)?;
+                let order_node = LeafNode::new(order_id, order_idx, &acc_user.key);
+                let order = Order { amount: tokens_remaining, expiry: expiry };
+                let mut eviction_count: u32 = 0;
+                loop {
+                    let entry = map_insert(ob, DT::AskOrder, &order_node);
+                    if entry.is_err() {
+                        // Evict orders if necessary
+                        if eviction_count == MAX_EVICTIONS {
+                            msg!("Failed to add order");
+                            return Err(ErrorCode::InternalError.into());
+                        }
+                        let evict_node = map_max(ob, DT::AskOrder).unwrap();
+                        let evict_order = ob.index::<Order>(OrderDT::AskOrder as u16, evict_node.slot() as usize);
+                        // Only evict if the price is better
+                        if inp_price >= Order::price(evict_node.key()) {
+                            msg!("Atellix: Orderbook Full - Price Is Not Below Evicted Order");
+                            return Err(ErrorCode::OrderbookFull.into());
+                        }
+                        let evict_amount: u64 = evict_order.amount();
+                        msg!("Atellix: Evicting Order[{}] - Owner: {} {} @ {}",
+                            evict_node.slot().to_string(),
+                            evict_node.owner().to_string(),
+                            evict_order.amount().to_string(),
+                            Order::price(evict_node.key()).to_string(),
+                        );
+                        log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &evict_node.owner(), true, evict_amount)?;
+                        map_remove(ob, DT::AskOrder, evict_node.key())?;
+                        Order::free_index(ob, DT::AskOrder, evict_node.slot())?;
+                        state_upd.active_ask = state_upd.active_ask.checked_sub(1).ok_or(error!(ErrorCode::Overflow))?;
+                        eviction_count = eviction_count + 1;
+                    } else {
+                        *ob.index_mut::<Order>(OrderDT::AskOrder.into(), order_idx as usize) = order;
+                        state_upd.active_ask = state_upd.active_ask.checked_add(1).ok_or(error!(ErrorCode::Overflow))?;
+                        break;
                     }
-                    let evict_node = map_max(ob, DT::AskOrder).unwrap();
-                    let evict_order = ob.index::<Order>(OrderDT::AskOrder as u16, evict_node.slot() as usize);
-                    // Only evict if the price is better
-                    if inp_price >= Order::price(evict_node.key()) {
-                        msg!("Atellix: Orderbook Full - Price Is Not Below Evicted Order");
-                        return Err(ErrorCode::OrderbookFull.into());
-                    }
-                    let evict_amount: u64 = evict_order.amount();
-                    msg!("Atellix: Evicting Order[{}] - Owner: {} {} @ {}",
-                        evict_node.slot().to_string(),
-                        evict_node.owner().to_string(),
-                        evict_order.amount().to_string(),
-                        Order::price(evict_node.key()).to_string(),
-                    );
-                    log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &evict_node.owner(), true, evict_amount)?;
-                    map_remove(ob, DT::AskOrder, evict_node.key())?;
-                    Order::free_index(ob, DT::AskOrder, evict_node.slot())?;
-                    state_upd.active_ask = state_upd.active_ask.checked_sub(1).ok_or(error!(ErrorCode::Overflow))?;
-                    eviction_count = eviction_count + 1;
-                } else {
-                    *ob.index_mut::<Order>(OrderDT::AskOrder.into(), order_idx as usize) = order;
-                    state_upd.active_ask = state_upd.active_ask.checked_add(1).ok_or(error!(ErrorCode::Overflow))?;
-                    break;
                 }
             }
             result.set_posted_quantity(tokens_remaining);
@@ -1729,17 +1785,19 @@ pub mod aqua_dex {
         );*/
 
         // Deposit lamports for settlement log space
-        let mut user_lamports = ctx.accounts.user.lamports();
-        user_lamports = user_lamports.checked_sub(market.log_fee).ok_or(error!(ErrorCode::Overflow))?;
-        **ctx.accounts.user.lamports.borrow_mut() = user_lamports;
-        let mut market_lamports = state_upd.to_account_info().lamports();
-        market_lamports = market_lamports.checked_add(market.log_fee).ok_or(error!(ErrorCode::Overflow))?;
-        **state_upd.to_account_info().lamports.borrow_mut() = market_lamports;
-        state_upd.log_deposit_balance = state_upd.log_deposit_balance.checked_add(market.log_fee).ok_or(error!(ErrorCode::Overflow))?;
+        if !inp_preview {
+            let mut user_lamports = ctx.accounts.user.lamports();
+            user_lamports = user_lamports.checked_sub(market.log_fee).ok_or(error!(ErrorCode::Overflow))?;
+            **ctx.accounts.user.lamports.borrow_mut() = user_lamports;
+            let mut market_lamports = state_upd.to_account_info().lamports();
+            market_lamports = market_lamports.checked_add(market.log_fee).ok_or(error!(ErrorCode::Overflow))?;
+            **state_upd.to_account_info().lamports.borrow_mut() = market_lamports;
+            state_upd.log_deposit_balance = state_upd.log_deposit_balance.checked_add(market.log_fee).ok_or(error!(ErrorCode::Overflow))?;
+        }
 
         // Send tokens to the vault
         let mint_type = MintType::try_from(market.mkt_mint_type).map_err(|_| ErrorCode::InvalidParameters)?;
-        perform_transfer(ctx.remaining_accounts, mint_type, 0, inp_quantity,
+        perform_transfer(ctx.remaining_accounts, mint_type, 0, inp_quantity, inp_preview,
             &ctx.accounts.user_mkt_token.to_account_info(),  // From
             &ctx.accounts.mkt_vault.to_account_info(),       // To
             &ctx.accounts.user.to_account_info(),            // Auth
@@ -1747,61 +1805,65 @@ pub mod aqua_dex {
         )?;
 
         if tokens_filled > 0 {
-            // Withdraw tokens from the vault
-            state_upd.prc_vault_balance = state_upd.prc_vault_balance.checked_sub(tokens_received).ok_or(error!(ErrorCode::Overflow))?;
-            state_upd.prc_order_balance = state_upd.prc_order_balance.checked_sub(tokens_received).ok_or(error!(ErrorCode::Overflow))?;
-
-            // Apply fees
             tokens_received = tokens_received.checked_sub(tokens_fee).ok_or(error!(ErrorCode::Overflow))?;
-            state_upd.prc_vault_balance = state_upd.prc_vault_balance.checked_add(tokens_fee).ok_or(error!(ErrorCode::Overflow))?;
-            state_upd.prc_fees_balance = state_upd.prc_fees_balance.checked_add(tokens_fee).ok_or(error!(ErrorCode::Overflow))?;
-
-            //msg!("Atellix: Pricing Token Vault Withdraw: {}", tokens_received.to_string());
-            /*msg!("Atellix: Pricing Token Vault Balance: {} (Orderbook: {})",
-                state_upd.prc_vault_balance,
-                state_upd.prc_order_balance,
-            );*/
-
-            let seeds = &[
-                market.to_account_info().key.as_ref(),
-                &[market.agent_nonce],
-            ];
-            let signer = &[&seeds[..]];
-            let mint_type = MintType::try_from(market.prc_mint_type).map_err(|_| ErrorCode::InvalidParameters)?;
-            perform_signed_transfer(ctx.remaining_accounts, signer, mint_type, 0, tokens_received,
-                &ctx.accounts.prc_vault.to_account_info(),          // From
-                &ctx.accounts.user_prc_token.to_account_info(),     // To
-                &ctx.accounts.agent.to_account_info(),              // Auth
-                &ctx.accounts.spl_token_prog.to_account_info(),     // SPL Token Program
-            )?;
             result.set_tokens_received(tokens_received);
+            if !inp_preview {
+                // Withdraw tokens from the vault
+                state_upd.prc_vault_balance = state_upd.prc_vault_balance.checked_sub(tokens_received).ok_or(error!(ErrorCode::Overflow))?;
+                state_upd.prc_order_balance = state_upd.prc_order_balance.checked_sub(tokens_received).ok_or(error!(ErrorCode::Overflow))?;
+
+                // Apply fees
+                state_upd.prc_vault_balance = state_upd.prc_vault_balance.checked_add(tokens_fee).ok_or(error!(ErrorCode::Overflow))?;
+                state_upd.prc_fees_balance = state_upd.prc_fees_balance.checked_add(tokens_fee).ok_or(error!(ErrorCode::Overflow))?;
+
+                //msg!("Atellix: Pricing Token Vault Withdraw: {}", tokens_received.to_string());
+                /*msg!("Atellix: Pricing Token Vault Balance: {} (Orderbook: {})",
+                    state_upd.prc_vault_balance,
+                    state_upd.prc_order_balance,
+                );*/
+
+                let seeds = &[
+                    market.to_account_info().key.as_ref(),
+                    &[market.agent_nonce],
+                ];
+                let signer = &[&seeds[..]];
+                let mint_type = MintType::try_from(market.prc_mint_type).map_err(|_| ErrorCode::InvalidParameters)?;
+                perform_signed_transfer(ctx.remaining_accounts, signer, mint_type, 0, tokens_received,
+                    &ctx.accounts.prc_vault.to_account_info(),          // From
+                    &ctx.accounts.user_prc_token.to_account_info(),     // To
+                    &ctx.accounts.agent.to_account_info(),              // Auth
+                    &ctx.accounts.spl_token_prog.to_account_info(),     // SPL Token Program
+                )?;
+            }
         }
         if *acc_result.key != *acc_user.key {
             store_struct::<TradeResult>(&result, acc_result)?;
         }
 
-        msg!("atellix-log");
-        emit!(OrderEvent {
-            event_type: 295320270387787716737004386297471454892, // solana/program/aqua-dex/limit_ask/order
-            action_id: state_upd.action_counter,
-            market: market.key(),
-            user: acc_user.key(),
-            market_token: ctx.accounts.user_mkt_token.key(),
-            pricing_token: ctx.accounts.user_prc_token.key(),
-            order_id: result.order_id,
-            order_side: Side::Ask as u8,
-            filled: tokens_remaining == 0,
-            tokens_received: result.tokens_received,
-            tokens_sent: result.tokens_sent,
-            tokens_fee: result.tokens_fee,
-            posted: result.posted_quantity > 0,
-            posted_quantity: result.posted_quantity,
-            order_price: inp_price,
-            order_quantity: inp_quantity,
-            expires: expiry,
-        });
+        if !inp_preview {
+            msg!("atellix-log");
+            emit!(OrderEvent {
+                event_type: 295320270387787716737004386297471454892, // solana/program/aqua-dex/limit_ask/order
+                action_id: state_upd.action_counter,
+                market: market.key(),
+                user: acc_user.key(),
+                market_token: ctx.accounts.user_mkt_token.key(),
+                pricing_token: ctx.accounts.user_prc_token.key(),
+                order_id: result.order_id,
+                order_side: Side::Ask as u8,
+                filled: tokens_remaining == 0,
+                tokens_received: result.tokens_received,
+                tokens_sent: result.tokens_sent,
+                tokens_fee: result.tokens_fee,
+                posted: result.posted_quantity > 0,
+                posted_quantity: result.posted_quantity,
+                order_price: inp_price,
+                order_quantity: inp_quantity,
+                expires: expiry,
+            });
+        }
 
-        Ok(())
+        Ok(result)
     }
 
     pub fn market_bid<'a, 'b, 'c, 'info>(ctx: Context<'a, 'b, 'c, 'info, OrderContext<'info>>,
@@ -1809,8 +1871,9 @@ pub mod aqua_dex {
         inp_quantity: u64,      // Fill until quantity
         inp_net_price: u64,     // Fill until net price is reached
         inp_fill: bool,         // Require order to be filled completely
+        inp_preview: bool,      // Preview mode
         inp_rollover: bool,     // Perform settlement log rollover
-    ) -> anchor_lang::Result<()> {
+    ) -> anchor_lang::Result<TradeResult> {
         if inp_by_quantity {
             require!(inp_quantity > 0, ErrorCode::InvalidParameters);
         } else {
@@ -1852,7 +1915,7 @@ pub mod aqua_dex {
 
         // Append a settlement log account
         let state_upd = &mut ctx.accounts.state;
-        if inp_rollover {
+        if inp_rollover && !inp_preview {
             if !state_upd.log_rollover {
                 // Another market participant already appended a new log account (please retry transaction)
                 msg!("Please update market data and retry");
@@ -1873,7 +1936,9 @@ pub mod aqua_dex {
         let mkt_decimal_base: u64 = 10;
         let mkt_decimal_factor: u64 = mkt_decimal_base.pow(market.mkt_decimals as u32);
 
-        state_upd.action_counter = state_upd.action_counter.checked_add(1).ok_or(error!(ErrorCode::Overflow))?;
+        if !inp_preview {
+            state_upd.action_counter = state_upd.action_counter.checked_add(1).ok_or(error!(ErrorCode::Overflow))?;
+        }
 
         let orderbook_data: &mut[u8] = &mut acc_orders.try_borrow_mut_data()?;
         let ob = SlabPageAlloc::new(orderbook_data);
@@ -1911,27 +1976,29 @@ pub mod aqua_dex {
                     tokens_paid = tokens_paid.checked_add(tokens_part).ok_or(error!(ErrorCode::Overflow))?;
                     tokens_fee = tokens_fee.checked_add(calculate_fee(market.taker_fee, tokens_part)?).ok_or(error!(ErrorCode::Overflow))?;
                     msg!("Atellix: Filling - {} @ {}", tokens_part.to_string(), posted_price.to_string());
-                    log_trade(tlog,
-                        97879353062914658353780090028087623355, // solana/program/aqua-dex/market_bid/match/quantity/exact
-                        state_upd.action_counter,
-                        &market.key(),
-                        posted_node.key(),
-                        true,
-                        &posted_node.owner(),
-                        &acc_user.key(),
-                        Side::Bid as u8,
-                        tokens_to_fill,
-                        posted_price,
-                        clock_ts
-                    )?;
-                    map_remove(ob, DT::AskOrder, posted_node.key())?;
-                    Order::free_index(ob, DT::AskOrder, posted_node.slot())?;
-                    state_upd.prc_vault_balance = state_upd.prc_vault_balance.checked_add(tokens_part).ok_or(error!(ErrorCode::Overflow))?;
-                    state_upd.prc_order_balance = state_upd.prc_order_balance.checked_add(tokens_part).ok_or(error!(ErrorCode::Overflow))?;
-                    log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &posted_node.owner(), false, tokens_part)?;
-                    state_upd.active_ask = state_upd.active_ask.checked_sub(1).ok_or(error!(ErrorCode::Overflow))?;
-                    state_upd.last_price = posted_price;
-                    state_upd.last_ts = clock_ts;
+                    if !inp_preview {
+                        log_trade(tlog,
+                            97879353062914658353780090028087623355, // solana/program/aqua-dex/market_bid/match/quantity/exact
+                            state_upd.action_counter,
+                            &market.key(),
+                            posted_node.key(),
+                            true,
+                            &posted_node.owner(),
+                            &acc_user.key(),
+                            Side::Bid as u8,
+                            tokens_to_fill,
+                            posted_price,
+                            clock_ts
+                        )?;
+                        map_remove(ob, DT::AskOrder, posted_node.key())?;
+                        Order::free_index(ob, DT::AskOrder, posted_node.slot())?;
+                        state_upd.active_ask = state_upd.active_ask.checked_sub(1).ok_or(error!(ErrorCode::Overflow))?;
+                        state_upd.prc_vault_balance = state_upd.prc_vault_balance.checked_add(tokens_part).ok_or(error!(ErrorCode::Overflow))?;
+                        state_upd.prc_order_balance = state_upd.prc_order_balance.checked_add(tokens_part).ok_or(error!(ErrorCode::Overflow))?;
+                        state_upd.last_price = posted_price;
+                        state_upd.last_ts = clock_ts;
+                        log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &posted_node.owner(), false, tokens_part)?;
+                    }
                     break;
                 } else if posted_qty < tokens_to_fill {   // Match the entire order and continue
                     tokens_to_fill = tokens_to_fill.checked_sub(posted_qty).ok_or(error!(ErrorCode::Overflow))?;
@@ -1940,53 +2007,57 @@ pub mod aqua_dex {
                     tokens_paid = tokens_paid.checked_add(tokens_part).ok_or(error!(ErrorCode::Overflow))?;
                     tokens_fee = tokens_fee.checked_add(calculate_fee(market.taker_fee, tokens_part)?).ok_or(error!(ErrorCode::Overflow))?;
                     msg!("Atellix: Filling - {} @ {}", posted_qty.to_string(), posted_price.to_string());
-                    log_trade(tlog,
-                        98887148454935384202006639804150096432, // solana/program/aqua-dex/market_bid/match/quantity/entire
-                        state_upd.action_counter,
-                        &market.key(),
-                        posted_node.key(),
-                        true,
-                        &posted_node.owner(),
-                        &acc_user.key(),
-                        Side::Bid as u8,
-                        posted_qty,
-                        posted_price,
-                        clock_ts
-                    )?;
-                    map_remove(ob, DT::AskOrder, posted_node.key())?;
-                    Order::free_index(ob, DT::AskOrder, posted_node.slot())?;
-                    state_upd.prc_vault_balance = state_upd.prc_vault_balance.checked_add(tokens_part).ok_or(error!(ErrorCode::Overflow))?;
-                    state_upd.prc_order_balance = state_upd.prc_order_balance.checked_add(tokens_part).ok_or(error!(ErrorCode::Overflow))?;
-                    log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &posted_node.owner(), false, tokens_part)?;
-                    state_upd.active_ask = state_upd.active_ask.checked_sub(1).ok_or(error!(ErrorCode::Overflow))?;
-                    state_upd.last_price = posted_price;
-                    state_upd.last_ts = clock_ts;
+                    if !inp_preview {
+                        log_trade(tlog,
+                            98887148454935384202006639804150096432, // solana/program/aqua-dex/market_bid/match/quantity/entire
+                            state_upd.action_counter,
+                            &market.key(),
+                            posted_node.key(),
+                            true,
+                            &posted_node.owner(),
+                            &acc_user.key(),
+                            Side::Bid as u8,
+                            posted_qty,
+                            posted_price,
+                            clock_ts
+                        )?;
+                        map_remove(ob, DT::AskOrder, posted_node.key())?;
+                        Order::free_index(ob, DT::AskOrder, posted_node.slot())?;
+                        state_upd.active_ask = state_upd.active_ask.checked_sub(1).ok_or(error!(ErrorCode::Overflow))?;
+                        state_upd.prc_vault_balance = state_upd.prc_vault_balance.checked_add(tokens_part).ok_or(error!(ErrorCode::Overflow))?;
+                        state_upd.prc_order_balance = state_upd.prc_order_balance.checked_add(tokens_part).ok_or(error!(ErrorCode::Overflow))?;
+                        state_upd.last_price = posted_price;
+                        state_upd.last_ts = clock_ts;
+                        log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &posted_node.owner(), false, tokens_part)?;
+                    }
                 } else if posted_qty > tokens_to_fill {   // Match part of the order
                     tokens_filled = tokens_filled.checked_add(tokens_to_fill).ok_or(error!(ErrorCode::Overflow))?;
                     let tokens_part = scale_price(tokens_to_fill, posted_price, mkt_decimal_factor)?;
                     tokens_paid = tokens_paid.checked_add(tokens_part).ok_or(error!(ErrorCode::Overflow))?;
                     tokens_fee = tokens_fee.checked_add(calculate_fee(market.taker_fee, tokens_part)?).ok_or(error!(ErrorCode::Overflow))?;
                     msg!("Atellix: Filling - {} @ {}", tokens_to_fill.to_string(), posted_price.to_string());
-                    log_trade(tlog,
-                        241528249049192735796332143519520355761, // solana/program/aqua-dex/market_bid/match/quantity/partial
-                        state_upd.action_counter,
-                        &market.key(),
-                        posted_node.key(),
-                        false,
-                        &posted_node.owner(),
-                        &acc_user.key(),
-                        Side::Bid as u8,
-                        tokens_to_fill,
-                        posted_price,
-                        clock_ts
-                    )?;
-                    let new_amount = posted_qty.checked_sub(tokens_to_fill).ok_or(error!(ErrorCode::Overflow))?;
-                    ob.index_mut::<Order>(OrderDT::AskOrder as u16, posted_node.slot() as usize).set_amount(new_amount);
-                    state_upd.prc_vault_balance = state_upd.prc_vault_balance.checked_add(tokens_part).ok_or(error!(ErrorCode::Overflow))?;
-                    state_upd.prc_order_balance = state_upd.prc_order_balance.checked_add(tokens_part).ok_or(error!(ErrorCode::Overflow))?;
-                    log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &posted_node.owner(), false, tokens_part)?;
-                    state_upd.last_price = posted_price;
-                    state_upd.last_ts = clock_ts;
+                    if !inp_preview {
+                        log_trade(tlog,
+                            241528249049192735796332143519520355761, // solana/program/aqua-dex/market_bid/match/quantity/partial
+                            state_upd.action_counter,
+                            &market.key(),
+                            posted_node.key(),
+                            false,
+                            &posted_node.owner(),
+                            &acc_user.key(),
+                            Side::Bid as u8,
+                            tokens_to_fill,
+                            posted_price,
+                            clock_ts
+                        )?;
+                        let new_amount = posted_qty.checked_sub(tokens_to_fill).ok_or(error!(ErrorCode::Overflow))?;
+                        ob.index_mut::<Order>(OrderDT::AskOrder as u16, posted_node.slot() as usize).set_amount(new_amount);
+                        state_upd.prc_vault_balance = state_upd.prc_vault_balance.checked_add(tokens_part).ok_or(error!(ErrorCode::Overflow))?;
+                        state_upd.prc_order_balance = state_upd.prc_order_balance.checked_add(tokens_part).ok_or(error!(ErrorCode::Overflow))?;
+                        state_upd.last_price = posted_price;
+                        state_upd.last_ts = clock_ts;
+                        log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &posted_node.owner(), false, tokens_part)?;
+                    }
                     break;
                 }
             } else {
@@ -1997,27 +2068,29 @@ pub mod aqua_dex {
                     tokens_paid = tokens_paid.checked_add(posted_part).ok_or(error!(ErrorCode::Overflow))?;
                     tokens_fee = tokens_fee.checked_add(calculate_fee(market.taker_fee, posted_part)?).ok_or(error!(ErrorCode::Overflow))?;
                     msg!("Atellix: Filling - {} @ {}", tokens_filled.to_string(), posted_price.to_string());
-                    log_trade(tlog,
-                        331852354717548342008417076114136032746, // solana/program/aqua-dex/market_bid/match/net_price/exact
-                        state_upd.action_counter,
-                        &market.key(),
-                        posted_node.key(),
-                        true,
-                        &posted_node.owner(),
-                        &acc_user.key(),
-                        Side::Bid as u8,
-                        posted_qty,
-                        posted_price,
-                        clock_ts
-                    )?;
-                    map_remove(ob, DT::AskOrder, posted_node.key())?;
-                    Order::free_index(ob, DT::AskOrder, posted_node.slot())?;
-                    state_upd.prc_vault_balance = state_upd.prc_vault_balance.checked_add(posted_part).ok_or(error!(ErrorCode::Overflow))?;
-                    state_upd.prc_order_balance = state_upd.prc_order_balance.checked_add(posted_part).ok_or(error!(ErrorCode::Overflow))?;
-                    log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &posted_node.owner(), false, posted_part)?;
-                    state_upd.active_ask = state_upd.active_ask.checked_sub(1).ok_or(error!(ErrorCode::Overflow))?;
-                    state_upd.last_price = posted_price;
-                    state_upd.last_ts = clock_ts;
+                    if !inp_preview {
+                        log_trade(tlog,
+                            331852354717548342008417076114136032746, // solana/program/aqua-dex/market_bid/match/net_price/exact
+                            state_upd.action_counter,
+                            &market.key(),
+                            posted_node.key(),
+                            true,
+                            &posted_node.owner(),
+                            &acc_user.key(),
+                            Side::Bid as u8,
+                            posted_qty,
+                            posted_price,
+                            clock_ts
+                        )?;
+                        map_remove(ob, DT::AskOrder, posted_node.key())?;
+                        Order::free_index(ob, DT::AskOrder, posted_node.slot())?;
+                        state_upd.active_ask = state_upd.active_ask.checked_sub(1).ok_or(error!(ErrorCode::Overflow))?;
+                        state_upd.prc_vault_balance = state_upd.prc_vault_balance.checked_add(posted_part).ok_or(error!(ErrorCode::Overflow))?;
+                        state_upd.prc_order_balance = state_upd.prc_order_balance.checked_add(posted_part).ok_or(error!(ErrorCode::Overflow))?;
+                        state_upd.last_price = posted_price;
+                        state_upd.last_ts = clock_ts;
+                        log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &posted_node.owner(), false, posted_part)?;
+                    }
                     break;
                 } else if posted_part < price_to_fill {   // Match the entire order and continue
                     price_to_fill = price_to_fill.checked_sub(posted_part).ok_or(error!(ErrorCode::Overflow))?;
@@ -2025,27 +2098,29 @@ pub mod aqua_dex {
                     tokens_paid = tokens_paid.checked_add(posted_part).ok_or(error!(ErrorCode::Overflow))?;
                     tokens_fee = tokens_fee.checked_add(calculate_fee(market.taker_fee, posted_part)?).ok_or(error!(ErrorCode::Overflow))?;
                     msg!("Atellix: Filling - {} @ {}", posted_qty.to_string(), posted_price.to_string());
-                    log_trade(tlog,
-                        30314321964017162377189412309266042294, // solana/program/aqua-dex/market_bid/match/net_price/entire
-                        state_upd.action_counter,
-                        &market.key(),
-                        posted_node.key(),
-                        true,
-                        &posted_node.owner(),
-                        &acc_user.key(),
-                        Side::Bid as u8,
-                        posted_qty,
-                        posted_price,
-                        clock_ts
-                    )?;
-                    map_remove(ob, DT::AskOrder, posted_node.key())?;
-                    Order::free_index(ob, DT::AskOrder, posted_node.slot())?;
-                    state_upd.prc_vault_balance = state_upd.prc_vault_balance.checked_add(posted_part).ok_or(error!(ErrorCode::Overflow))?;
-                    state_upd.prc_order_balance = state_upd.prc_order_balance.checked_add(posted_part).ok_or(error!(ErrorCode::Overflow))?;
-                    log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &posted_node.owner(), false, posted_part)?;
-                    state_upd.active_ask = state_upd.active_ask.checked_sub(1).ok_or(error!(ErrorCode::Overflow))?;
-                    state_upd.last_price = posted_price;
-                    state_upd.last_ts = clock_ts;
+                    if !inp_preview {
+                        log_trade(tlog,
+                            30314321964017162377189412309266042294, // solana/program/aqua-dex/market_bid/match/net_price/entire
+                            state_upd.action_counter,
+                            &market.key(),
+                            posted_node.key(),
+                            true,
+                            &posted_node.owner(),
+                            &acc_user.key(),
+                            Side::Bid as u8,
+                            posted_qty,
+                            posted_price,
+                            clock_ts
+                        )?;
+                        map_remove(ob, DT::AskOrder, posted_node.key())?;
+                        Order::free_index(ob, DT::AskOrder, posted_node.slot())?;
+                        state_upd.active_ask = state_upd.active_ask.checked_sub(1).ok_or(error!(ErrorCode::Overflow))?;
+                        state_upd.prc_vault_balance = state_upd.prc_vault_balance.checked_add(posted_part).ok_or(error!(ErrorCode::Overflow))?;
+                        state_upd.prc_order_balance = state_upd.prc_order_balance.checked_add(posted_part).ok_or(error!(ErrorCode::Overflow))?;
+                        state_upd.last_price = posted_price;
+                        state_upd.last_ts = clock_ts;
+                        log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &posted_node.owner(), false, posted_part)?;
+                    }
                 } else if posted_part > price_to_fill {   // Match part of the order
                     // Calculate filled tokens
                     let fill_amount = fill_quantity(price_to_fill, posted_price, mkt_decimal_factor)?;
@@ -2053,26 +2128,28 @@ pub mod aqua_dex {
                     tokens_paid = tokens_paid.checked_add(price_to_fill).ok_or(error!(ErrorCode::Overflow))?;
                     tokens_fee = tokens_fee.checked_add(calculate_fee(market.taker_fee, price_to_fill)?).ok_or(error!(ErrorCode::Overflow))?;
                     msg!("Atellix: Filling - {} @ {}", fill_amount.to_string(), posted_price.to_string());
-                    log_trade(tlog,
-                        237563056127520713232024370460619306548, // solana/program/aqua-dex/market_bid/match/net_price/partial
-                        state_upd.action_counter,
-                        &market.key(),
-                        posted_node.key(),
-                        false,
-                        &posted_node.owner(),
-                        &acc_user.key(),
-                        Side::Bid as u8,
-                        fill_amount,
-                        posted_price,
-                        clock_ts
-                    )?;
-                    let new_amount = posted_qty.checked_sub(fill_amount).ok_or(error!(ErrorCode::Overflow))?;
-                    ob.index_mut::<Order>(OrderDT::AskOrder as u16, posted_node.slot() as usize).set_amount(new_amount);
-                    state_upd.prc_vault_balance = state_upd.prc_vault_balance.checked_add(price_to_fill).ok_or(error!(ErrorCode::Overflow))?;
-                    state_upd.prc_order_balance = state_upd.prc_order_balance.checked_add(price_to_fill).ok_or(error!(ErrorCode::Overflow))?;
-                    log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &posted_node.owner(), false, price_to_fill)?;
-                    state_upd.last_price = posted_price;
-                    state_upd.last_ts = clock_ts;
+                    if !inp_preview {
+                        log_trade(tlog,
+                            237563056127520713232024370460619306548, // solana/program/aqua-dex/market_bid/match/net_price/partial
+                            state_upd.action_counter,
+                            &market.key(),
+                            posted_node.key(),
+                            false,
+                            &posted_node.owner(),
+                            &acc_user.key(),
+                            Side::Bid as u8,
+                            fill_amount,
+                            posted_price,
+                            clock_ts
+                        )?;
+                        let new_amount = posted_qty.checked_sub(fill_amount).ok_or(error!(ErrorCode::Overflow))?;
+                        ob.index_mut::<Order>(OrderDT::AskOrder as u16, posted_node.slot() as usize).set_amount(new_amount);
+                        state_upd.prc_vault_balance = state_upd.prc_vault_balance.checked_add(price_to_fill).ok_or(error!(ErrorCode::Overflow))?;
+                        state_upd.prc_order_balance = state_upd.prc_order_balance.checked_add(price_to_fill).ok_or(error!(ErrorCode::Overflow))?;
+                        state_upd.last_price = posted_price;
+                        state_upd.last_ts = clock_ts;
+                        log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &posted_node.owner(), false, price_to_fill)?;
+                    }
                     break;
                 }
             }
@@ -2080,7 +2157,7 @@ pub mod aqua_dex {
         msg!("Atellix: Fee: {}", tokens_fee.to_string());
 
         let mut expired_count: u32 = 0;
-        if expired_orders.len() > 0 {
+        if expired_orders.len() > 0 && !inp_preview {
             loop {
                 if expired_orders.len() == 0 || expired_count == MAX_EXPIRATIONS {
                     break;
@@ -2133,8 +2210,10 @@ pub mod aqua_dex {
 
         // Apply fees
         tokens_paid = tokens_paid.checked_add(tokens_fee).ok_or(error!(ErrorCode::Overflow))?;
-        state_upd.prc_vault_balance = state_upd.prc_vault_balance.checked_add(tokens_fee).ok_or(error!(ErrorCode::Overflow))?;
-        state_upd.prc_fees_balance = state_upd.prc_fees_balance.checked_add(tokens_fee).ok_or(error!(ErrorCode::Overflow))?;
+        if !inp_preview {
+            state_upd.prc_vault_balance = state_upd.prc_vault_balance.checked_add(tokens_fee).ok_or(error!(ErrorCode::Overflow))?;
+            state_upd.prc_fees_balance = state_upd.prc_fees_balance.checked_add(tokens_fee).ok_or(error!(ErrorCode::Overflow))?;
+        }
 
         /*msg!("Atellix: Pricing Token Vault Deposit: {}", total_cost.to_string());
         msg!("Atellix: Pricing Token Vault Balance: {} (Orderbook: {})",
@@ -2144,7 +2223,7 @@ pub mod aqua_dex {
 
         // Send tokens to the vault
         let mint_type = MintType::try_from(market.prc_mint_type).map_err(|_| ErrorCode::InvalidParameters)?;
-        perform_transfer(ctx.remaining_accounts, mint_type, 0, tokens_paid,
+        perform_transfer(ctx.remaining_accounts, mint_type, 0, tokens_paid, inp_preview,
             &ctx.accounts.user_prc_token.to_account_info(),  // From
             &ctx.accounts.prc_vault.to_account_info(),       // To
             &ctx.accounts.user.to_account_info(),            // Auth
@@ -2152,7 +2231,7 @@ pub mod aqua_dex {
         )?;
         result.set_tokens_sent(tokens_paid);
 
-        if tokens_filled > 0 {
+        if tokens_filled > 0 && !inp_preview {
             // Withdraw tokens from the vault
             state_upd.mkt_vault_balance = state_upd.mkt_vault_balance.checked_sub(tokens_filled).ok_or(error!(ErrorCode::Overflow))?;
             state_upd.mkt_order_balance = state_upd.mkt_order_balance.checked_sub(tokens_filled).ok_or(error!(ErrorCode::Overflow))?;
@@ -2182,28 +2261,30 @@ pub mod aqua_dex {
             tokens_paid == inp_net_price
         };
 
-        msg!("atellix-log");
-        emit!(OrderEvent {
-            event_type: 151919600483167167737000078670308605753, // solana/program/aqua-dex/market_bid/order
-            action_id: state_upd.action_counter,
-            market: market.key(),
-            user: acc_user.key(),
-            market_token: ctx.accounts.user_mkt_token.key(),
-            pricing_token: ctx.accounts.user_prc_token.key(),
-            order_id: 0,
-            order_side: Side::Bid as u8,
-            filled: was_filled,
-            tokens_received: result.tokens_received,
-            tokens_sent: result.tokens_sent,
-            tokens_fee: tokens_fee,
-            posted: false,
-            posted_quantity: 0,
-            order_price: inp_net_price,
-            order_quantity: inp_quantity,
-            expires: 0,
-        });
+        if !inp_preview {
+            msg!("atellix-log");
+            emit!(OrderEvent {
+                event_type: 151919600483167167737000078670308605753, // solana/program/aqua-dex/market_bid/order
+                action_id: state_upd.action_counter,
+                market: market.key(),
+                user: acc_user.key(),
+                market_token: ctx.accounts.user_mkt_token.key(),
+                pricing_token: ctx.accounts.user_prc_token.key(),
+                order_id: 0,
+                order_side: Side::Bid as u8,
+                filled: was_filled,
+                tokens_received: result.tokens_received,
+                tokens_sent: result.tokens_sent,
+                tokens_fee: tokens_fee,
+                posted: false,
+                posted_quantity: 0,
+                order_price: inp_net_price,
+                order_quantity: inp_quantity,
+                expires: 0,
+            });
+        }
 
-        Ok(())
+        Ok(result)
     }
 
     pub fn market_ask<'a, 'b, 'c, 'info>(ctx: Context<'a, 'b, 'c, 'info, OrderContext<'info>>,
@@ -2211,8 +2292,9 @@ pub mod aqua_dex {
         inp_quantity: u64,      // Fill until quantity
         inp_net_price: u64,     // Fill until net price is reached
         inp_fill: bool,         // Require order to be filled completely
+        inp_preview: bool,      // Preview mode
         inp_rollover: bool,     // Perform settlement log rollover
-    ) -> anchor_lang::Result<()> {
+    ) -> anchor_lang::Result<TradeResult> {
         if inp_by_quantity {
             require!(inp_quantity > 0, ErrorCode::InvalidParameters);
         } else {
@@ -2254,7 +2336,7 @@ pub mod aqua_dex {
 
         // Append a settlement log account
         let state_upd = &mut ctx.accounts.state;
-        if inp_rollover {
+        if inp_rollover && !inp_preview {
             if !state_upd.log_rollover {
                 // Another market participant already appended a new log account (please retry transaction)
                 msg!("Please update market data and retry");
@@ -2273,7 +2355,9 @@ pub mod aqua_dex {
         msg!("Atellix: Market Ask: By Qty: {} Quantity: {} Net Price: {}", inp_by_quantity.to_string(), inp_quantity.to_string(), inp_net_price.to_string());
 
         let state_upd = &mut ctx.accounts.state;
-        state_upd.action_counter = state_upd.action_counter.checked_add(1).ok_or(error!(ErrorCode::Overflow))?;
+        if !inp_preview {
+            state_upd.action_counter = state_upd.action_counter.checked_add(1).ok_or(error!(ErrorCode::Overflow))?;
+        }
 
         let orderbook_data: &mut[u8] = &mut acc_orders.try_borrow_mut_data()?;
         let ob = SlabPageAlloc::new(orderbook_data);
@@ -2313,27 +2397,29 @@ pub mod aqua_dex {
                     tokens_received = tokens_received.checked_add(tokens_part).ok_or(error!(ErrorCode::Overflow))?;
                     tokens_fee = tokens_fee.checked_add(calculate_fee(market.taker_fee, tokens_part)?).ok_or(error!(ErrorCode::Overflow))?;
                     msg!("Atellix: Filling - {} @ {}", tokens_part.to_string(), posted_price.to_string());
-                    log_trade(tlog,
-                        176535012143782409593813433848999612355, // solana/program/aqua-dex/market_ask/match/quantity/exact
-                        state_upd.action_counter,
-                        &market.key(),
-                        posted_node.key(),
-                        true,
-                        &posted_node.owner(),
-                        &acc_user.key(),
-                        Side::Ask as u8,
-                        tokens_to_fill,
-                        posted_price,
-                        clock_ts
-                    )?;
-                    map_remove(ob, DT::BidOrder, posted_node.key())?;
-                    Order::free_index(ob, DT::BidOrder, posted_node.slot())?;
-                    state_upd.mkt_vault_balance = state_upd.mkt_vault_balance.checked_add(tokens_to_fill).ok_or(error!(ErrorCode::Overflow))?;
-                    state_upd.mkt_order_balance = state_upd.mkt_order_balance.checked_add(tokens_to_fill).ok_or(error!(ErrorCode::Overflow))?;
-                    log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &posted_node.owner(), true, tokens_to_fill)?;
-                    state_upd.active_bid = state_upd.active_bid.checked_sub(1).ok_or(error!(ErrorCode::Overflow))?;
-                    state_upd.last_price = posted_price;
-                    state_upd.last_ts = clock_ts;
+                    if !inp_preview {
+                        log_trade(tlog,
+                            176535012143782409593813433848999612355, // solana/program/aqua-dex/market_ask/match/quantity/exact
+                            state_upd.action_counter,
+                            &market.key(),
+                            posted_node.key(),
+                            true,
+                            &posted_node.owner(),
+                            &acc_user.key(),
+                            Side::Ask as u8,
+                            tokens_to_fill,
+                            posted_price,
+                            clock_ts
+                        )?;
+                        map_remove(ob, DT::BidOrder, posted_node.key())?;
+                        Order::free_index(ob, DT::BidOrder, posted_node.slot())?;
+                        state_upd.active_bid = state_upd.active_bid.checked_sub(1).ok_or(error!(ErrorCode::Overflow))?;
+                        state_upd.mkt_vault_balance = state_upd.mkt_vault_balance.checked_add(tokens_to_fill).ok_or(error!(ErrorCode::Overflow))?;
+                        state_upd.mkt_order_balance = state_upd.mkt_order_balance.checked_add(tokens_to_fill).ok_or(error!(ErrorCode::Overflow))?;
+                        state_upd.last_price = posted_price;
+                        state_upd.last_ts = clock_ts;
+                        log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &posted_node.owner(), true, tokens_to_fill)?;
+                    }
                     break;
                 } else if posted_qty < tokens_to_fill {   // Match the entire order and continue
                     tokens_to_fill = tokens_to_fill.checked_sub(posted_qty).ok_or(error!(ErrorCode::Overflow))?;
@@ -2342,53 +2428,57 @@ pub mod aqua_dex {
                     tokens_received = tokens_received.checked_add(tokens_part).ok_or(error!(ErrorCode::Overflow))?;
                     tokens_fee = tokens_fee.checked_add(calculate_fee(market.taker_fee, tokens_part)?).ok_or(error!(ErrorCode::Overflow))?;
                     msg!("Atellix: Filling - {} @ {}", posted_qty.to_string(), posted_price.to_string());
-                    log_trade(tlog,
-                        277111811349020061708541382826182055538, // solana/program/aqua-dex/market_ask/match/quantity/entire
-                        state_upd.action_counter,
-                        &market.key(),
-                        posted_node.key(),
-                        true,
-                        &posted_node.owner(),
-                        &acc_user.key(),
-                        Side::Ask as u8,
-                        posted_qty,
-                        posted_price,
-                        clock_ts
-                    )?;
-                    map_remove(ob, DT::BidOrder, posted_node.key())?;
-                    Order::free_index(ob, DT::BidOrder, posted_node.slot())?;
-                    state_upd.mkt_vault_balance = state_upd.mkt_vault_balance.checked_add(posted_qty).ok_or(error!(ErrorCode::Overflow))?;
-                    state_upd.mkt_order_balance = state_upd.mkt_order_balance.checked_add(posted_qty).ok_or(error!(ErrorCode::Overflow))?;
-                    log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &posted_node.owner(), true, posted_qty)?;
-                    state_upd.active_bid = state_upd.active_bid.checked_sub(1).ok_or(error!(ErrorCode::Overflow))?;
-                    state_upd.last_price = posted_price;
-                    state_upd.last_ts = clock_ts;
+                    if !inp_preview {
+                        log_trade(tlog,
+                            277111811349020061708541382826182055538, // solana/program/aqua-dex/market_ask/match/quantity/entire
+                            state_upd.action_counter,
+                            &market.key(),
+                            posted_node.key(),
+                            true,
+                            &posted_node.owner(),
+                            &acc_user.key(),
+                            Side::Ask as u8,
+                            posted_qty,
+                            posted_price,
+                            clock_ts
+                        )?;
+                        map_remove(ob, DT::BidOrder, posted_node.key())?;
+                        Order::free_index(ob, DT::BidOrder, posted_node.slot())?;
+                        state_upd.active_bid = state_upd.active_bid.checked_sub(1).ok_or(error!(ErrorCode::Overflow))?;
+                        state_upd.mkt_vault_balance = state_upd.mkt_vault_balance.checked_add(posted_qty).ok_or(error!(ErrorCode::Overflow))?;
+                        state_upd.mkt_order_balance = state_upd.mkt_order_balance.checked_add(posted_qty).ok_or(error!(ErrorCode::Overflow))?;
+                        state_upd.last_price = posted_price;
+                        state_upd.last_ts = clock_ts;
+                        log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &posted_node.owner(), true, posted_qty)?;
+                    }
                 } else if posted_qty > tokens_to_fill {   // Match part of the order
                     tokens_filled = tokens_filled.checked_add(tokens_to_fill).ok_or(error!(ErrorCode::Overflow))?;
                     let tokens_part = scale_price(tokens_to_fill, posted_price, mkt_decimal_factor)?;
                     tokens_received = tokens_received.checked_add(tokens_part).ok_or(error!(ErrorCode::Overflow))?;
                     tokens_fee = tokens_fee.checked_add(calculate_fee(market.taker_fee, tokens_part)?).ok_or(error!(ErrorCode::Overflow))?;
                     msg!("Atellix: Filling - {} @ {}", tokens_to_fill.to_string(), posted_price.to_string());
-                    log_trade(tlog,
-                        338129135642557935308794285239529753670, // solana/program/aqua-dex/market_ask/match/quantity/partial
-                        state_upd.action_counter,
-                        &market.key(),
-                        posted_node.key(),
-                        false,
-                        &posted_node.owner(),
-                        &acc_user.key(),
-                        Side::Ask as u8,
-                        tokens_to_fill,
-                        posted_price,
-                        clock_ts
-                    )?;
-                    let new_amount = posted_qty.checked_sub(tokens_to_fill).ok_or(error!(ErrorCode::Overflow))?;
-                    ob.index_mut::<Order>(OrderDT::BidOrder as u16, posted_node.slot() as usize).set_amount(new_amount);
-                    state_upd.mkt_vault_balance = state_upd.mkt_vault_balance.checked_add(tokens_to_fill).ok_or(error!(ErrorCode::Overflow))?;
-                    state_upd.mkt_order_balance = state_upd.mkt_order_balance.checked_add(tokens_to_fill).ok_or(error!(ErrorCode::Overflow))?;
-                    log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &posted_node.owner(), true, tokens_to_fill)?;
-                    state_upd.last_price = posted_price;
-                    state_upd.last_ts = clock_ts;
+                    if !inp_preview {
+                        log_trade(tlog,
+                            338129135642557935308794285239529753670, // solana/program/aqua-dex/market_ask/match/quantity/partial
+                            state_upd.action_counter,
+                            &market.key(),
+                            posted_node.key(),
+                            false,
+                            &posted_node.owner(),
+                            &acc_user.key(),
+                            Side::Ask as u8,
+                            tokens_to_fill,
+                            posted_price,
+                            clock_ts
+                        )?;
+                        let new_amount = posted_qty.checked_sub(tokens_to_fill).ok_or(error!(ErrorCode::Overflow))?;
+                        ob.index_mut::<Order>(OrderDT::BidOrder as u16, posted_node.slot() as usize).set_amount(new_amount);
+                        state_upd.mkt_vault_balance = state_upd.mkt_vault_balance.checked_add(tokens_to_fill).ok_or(error!(ErrorCode::Overflow))?;
+                        state_upd.mkt_order_balance = state_upd.mkt_order_balance.checked_add(tokens_to_fill).ok_or(error!(ErrorCode::Overflow))?;
+                        state_upd.last_price = posted_price;
+                        state_upd.last_ts = clock_ts;
+                        log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &posted_node.owner(), true, tokens_to_fill)?;
+                    }
                     break;
                 }
             } else {
@@ -2399,27 +2489,29 @@ pub mod aqua_dex {
                     tokens_received = tokens_received.checked_add(posted_part).ok_or(error!(ErrorCode::Overflow))?;
                     tokens_fee = tokens_fee.checked_add(calculate_fee(market.taker_fee, posted_part)?).ok_or(error!(ErrorCode::Overflow))?;
                     msg!("Atellix: Filling - {} @ {}", posted_qty.to_string(), posted_price.to_string());
-                    log_trade(tlog,
-                        38185514874311817824997288786026180382, // solana/program/aqua-dex/market_ask/match/net_price/exact
-                        state_upd.action_counter,
-                        &market.key(),
-                        posted_node.key(),
-                        true,
-                        &posted_node.owner(),
-                        &acc_user.key(),
-                        Side::Ask as u8,
-                        posted_qty,
-                        posted_price,
-                        clock_ts
-                    )?;
-                    map_remove(ob, DT::BidOrder, posted_node.key())?;
-                    Order::free_index(ob, DT::BidOrder, posted_node.slot())?;
-                    state_upd.mkt_vault_balance = state_upd.mkt_vault_balance.checked_add(posted_qty).ok_or(error!(ErrorCode::Overflow))?;
-                    state_upd.mkt_order_balance = state_upd.mkt_order_balance.checked_add(posted_qty).ok_or(error!(ErrorCode::Overflow))?;
-                    log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &posted_node.owner(), true, posted_qty)?;
-                    state_upd.active_bid = state_upd.active_bid.checked_sub(1).ok_or(error!(ErrorCode::Overflow))?;
-                    state_upd.last_price = posted_price;
-                    state_upd.last_ts = clock_ts;
+                    if !inp_preview {
+                        log_trade(tlog,
+                            38185514874311817824997288786026180382, // solana/program/aqua-dex/market_ask/match/net_price/exact
+                            state_upd.action_counter,
+                            &market.key(),
+                            posted_node.key(),
+                            true,
+                            &posted_node.owner(),
+                            &acc_user.key(),
+                            Side::Ask as u8,
+                            posted_qty,
+                            posted_price,
+                            clock_ts
+                        )?;
+                        map_remove(ob, DT::BidOrder, posted_node.key())?;
+                        Order::free_index(ob, DT::BidOrder, posted_node.slot())?;
+                        state_upd.active_bid = state_upd.active_bid.checked_sub(1).ok_or(error!(ErrorCode::Overflow))?;
+                        state_upd.mkt_vault_balance = state_upd.mkt_vault_balance.checked_add(posted_qty).ok_or(error!(ErrorCode::Overflow))?;
+                        state_upd.mkt_order_balance = state_upd.mkt_order_balance.checked_add(posted_qty).ok_or(error!(ErrorCode::Overflow))?;
+                        state_upd.last_price = posted_price;
+                        state_upd.last_ts = clock_ts;
+                        log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &posted_node.owner(), true, posted_qty)?;
+                    }
                     break;
                 } else if posted_part < price_to_fill {   // Match the entire order and continue
                     price_to_fill = price_to_fill.checked_sub(posted_part).ok_or(error!(ErrorCode::Overflow))?;
@@ -2427,53 +2519,57 @@ pub mod aqua_dex {
                     tokens_received = tokens_received.checked_add(posted_part).ok_or(error!(ErrorCode::Overflow))?;
                     tokens_fee = tokens_fee.checked_add(calculate_fee(market.taker_fee, posted_part)?).ok_or(error!(ErrorCode::Overflow))?;
                     msg!("Atellix: Filling - {} @ {}", posted_qty.to_string(), posted_price.to_string());
-                    log_trade(tlog,
-                        48115079441646063920817461881527222742, // solana/program/aqua-dex/market_ask/match/net_price/entire
-                        state_upd.action_counter,
-                        &market.key(),
-                        posted_node.key(),
-                        true,
-                        &posted_node.owner(),
-                        &acc_user.key(),
-                        Side::Ask as u8,
-                        posted_qty,
-                        posted_price,
-                        clock_ts
-                    )?;
-                    map_remove(ob, DT::BidOrder, posted_node.key())?;
-                    Order::free_index(ob, DT::BidOrder, posted_node.slot())?;
-                    state_upd.mkt_vault_balance = state_upd.mkt_vault_balance.checked_add(posted_qty).ok_or(error!(ErrorCode::Overflow))?;
-                    state_upd.mkt_order_balance = state_upd.mkt_order_balance.checked_add(posted_qty).ok_or(error!(ErrorCode::Overflow))?;
-                    log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &posted_node.owner(), true, posted_qty)?;
-                    state_upd.active_bid = state_upd.active_bid.checked_sub(1).ok_or(error!(ErrorCode::Overflow))?;
-                    state_upd.last_price = posted_price;
-                    state_upd.last_ts = clock_ts;
+                    if !inp_preview {
+                        log_trade(tlog,
+                            48115079441646063920817461881527222742, // solana/program/aqua-dex/market_ask/match/net_price/entire
+                            state_upd.action_counter,
+                            &market.key(),
+                            posted_node.key(),
+                            true,
+                            &posted_node.owner(),
+                            &acc_user.key(),
+                            Side::Ask as u8,
+                            posted_qty,
+                            posted_price,
+                            clock_ts
+                        )?;
+                        map_remove(ob, DT::BidOrder, posted_node.key())?;
+                        Order::free_index(ob, DT::BidOrder, posted_node.slot())?;
+                        state_upd.active_bid = state_upd.active_bid.checked_sub(1).ok_or(error!(ErrorCode::Overflow))?;
+                        state_upd.mkt_vault_balance = state_upd.mkt_vault_balance.checked_add(posted_qty).ok_or(error!(ErrorCode::Overflow))?;
+                        state_upd.mkt_order_balance = state_upd.mkt_order_balance.checked_add(posted_qty).ok_or(error!(ErrorCode::Overflow))?;
+                        state_upd.last_price = posted_price;
+                        state_upd.last_ts = clock_ts;
+                        log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &posted_node.owner(), true, posted_qty)?;
+                    }
                 } else if posted_part > price_to_fill {   // Match part of the order
                     let fill_amount = fill_quantity(price_to_fill, posted_price, mkt_decimal_factor)?;
                     tokens_filled = tokens_filled.checked_add(fill_amount).ok_or(error!(ErrorCode::Overflow))?;
                     tokens_received = tokens_received.checked_add(price_to_fill).ok_or(error!(ErrorCode::Overflow))?;
                     tokens_fee = tokens_fee.checked_add(calculate_fee(market.taker_fee, price_to_fill)?).ok_or(error!(ErrorCode::Overflow))?;
                     msg!("Atellix: Filling - {} @ {}", fill_amount.to_string(), posted_price.to_string());
-                    log_trade(tlog,
-                        338446361041777477888718125403430758950, // solana/program/aqua-dex/market_ask/match/net_price/partial
-                        state_upd.action_counter,
-                        &market.key(),
-                        posted_node.key(),
-                        false,
-                        &posted_node.owner(),
-                        &acc_user.key(),
-                        Side::Ask as u8,
-                        fill_amount,
-                        posted_price,
-                        clock_ts
-                    )?;
-                    let new_amount = posted_qty.checked_sub(fill_amount).ok_or(error!(ErrorCode::Overflow))?;
-                    ob.index_mut::<Order>(OrderDT::BidOrder as u16, posted_node.slot() as usize).set_amount(new_amount);
-                    state_upd.mkt_vault_balance = state_upd.mkt_vault_balance.checked_add(fill_amount).ok_or(error!(ErrorCode::Overflow))?;
-                    state_upd.mkt_order_balance = state_upd.mkt_order_balance.checked_add(fill_amount).ok_or(error!(ErrorCode::Overflow))?;
-                    log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &posted_node.owner(), true, fill_amount)?;
-                    state_upd.last_price = posted_price;
-                    state_upd.last_ts = clock_ts;
+                    if !inp_preview {
+                        log_trade(tlog,
+                            338446361041777477888718125403430758950, // solana/program/aqua-dex/market_ask/match/net_price/partial
+                            state_upd.action_counter,
+                            &market.key(),
+                            posted_node.key(),
+                            false,
+                            &posted_node.owner(),
+                            &acc_user.key(),
+                            Side::Ask as u8,
+                            fill_amount,
+                            posted_price,
+                            clock_ts
+                        )?;
+                        let new_amount = posted_qty.checked_sub(fill_amount).ok_or(error!(ErrorCode::Overflow))?;
+                        ob.index_mut::<Order>(OrderDT::BidOrder as u16, posted_node.slot() as usize).set_amount(new_amount);
+                        state_upd.mkt_vault_balance = state_upd.mkt_vault_balance.checked_add(fill_amount).ok_or(error!(ErrorCode::Overflow))?;
+                        state_upd.mkt_order_balance = state_upd.mkt_order_balance.checked_add(fill_amount).ok_or(error!(ErrorCode::Overflow))?;
+                        state_upd.last_price = posted_price;
+                        state_upd.last_ts = clock_ts;
+                        log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &posted_node.owner(), true, fill_amount)?;
+                    }
                     break;
                 }
             }
@@ -2482,7 +2578,7 @@ pub mod aqua_dex {
         msg!("Atellix: Fee: {}", tokens_fee.to_string());
 
         let mut expired_count: u32 = 0;
-        if expired_orders.len() > 0 {
+        if expired_orders.len() > 0 && !inp_preview {
             loop {
                 if expired_orders.len() == 0 || expired_count == MAX_EXPIRATIONS {
                     break;
@@ -2543,7 +2639,7 @@ pub mod aqua_dex {
 
         // Send tokens to the vault
         let mint_type = MintType::try_from(market.mkt_mint_type).map_err(|_| ErrorCode::InvalidParameters)?;
-        perform_transfer(ctx.remaining_accounts, mint_type, 0, tokens_filled,
+        perform_transfer(ctx.remaining_accounts, mint_type, 0, tokens_filled, inp_preview,
             &ctx.accounts.user_mkt_token.to_account_info(),  // From
             &ctx.accounts.mkt_vault.to_account_info(),       // To
             &ctx.accounts.user.to_account_info(),            // Auth
@@ -2551,34 +2647,36 @@ pub mod aqua_dex {
         )?;
 
         if tokens_filled > 0 {
-            // Withdraw tokens from the vault
-            state_upd.prc_vault_balance = state_upd.prc_vault_balance.checked_sub(tokens_received).ok_or(error!(ErrorCode::Overflow))?;
-            state_upd.prc_order_balance = state_upd.prc_order_balance.checked_sub(tokens_received).ok_or(error!(ErrorCode::Overflow))?;
-
-            // Apply fees
             tokens_received = tokens_received.checked_sub(tokens_fee).ok_or(error!(ErrorCode::Overflow))?;
-            state_upd.prc_vault_balance = state_upd.prc_vault_balance.checked_add(tokens_fee).ok_or(error!(ErrorCode::Overflow))?;
-            state_upd.prc_fees_balance = state_upd.prc_fees_balance.checked_add(tokens_fee).ok_or(error!(ErrorCode::Overflow))?;
-
-            //msg!("Atellix: Pricing Token Vault Withdraw: {}", tokens_received.to_string());
-            /*msg!("Atellix: Pricing Token Vault Balance: {} (Orderbook: {})",
-                state_upd.prc_vault_balance,
-                state_upd.prc_order_balance,
-            );*/
-
-            let seeds = &[
-                market.to_account_info().key.as_ref(),
-                &[market.agent_nonce],
-            ];
-            let signer = &[&seeds[..]];
-            let mint_type = MintType::try_from(market.prc_mint_type).map_err(|_| ErrorCode::InvalidParameters)?;
-            perform_signed_transfer(ctx.remaining_accounts, signer, mint_type, 0, tokens_received,
-                &ctx.accounts.prc_vault.to_account_info(),          // From
-                &ctx.accounts.user_prc_token.to_account_info(),     // To
-                &ctx.accounts.agent.to_account_info(),              // Auth
-                &ctx.accounts.spl_token_prog.to_account_info(),     // SPL Token Program
-            )?;
             result.set_tokens_received(tokens_received);
+            if !inp_preview {
+                // Withdraw tokens from the vault
+                state_upd.prc_vault_balance = state_upd.prc_vault_balance.checked_sub(tokens_received).ok_or(error!(ErrorCode::Overflow))?;
+                state_upd.prc_order_balance = state_upd.prc_order_balance.checked_sub(tokens_received).ok_or(error!(ErrorCode::Overflow))?;
+
+                // Apply fees
+                state_upd.prc_vault_balance = state_upd.prc_vault_balance.checked_add(tokens_fee).ok_or(error!(ErrorCode::Overflow))?;
+                state_upd.prc_fees_balance = state_upd.prc_fees_balance.checked_add(tokens_fee).ok_or(error!(ErrorCode::Overflow))?;
+
+                //msg!("Atellix: Pricing Token Vault Withdraw: {}", tokens_received.to_string());
+                /*msg!("Atellix: Pricing Token Vault Balance: {} (Orderbook: {})",
+                    state_upd.prc_vault_balance,
+                    state_upd.prc_order_balance,
+                );*/
+
+                let seeds = &[
+                    market.to_account_info().key.as_ref(),
+                    &[market.agent_nonce],
+                ];
+                let signer = &[&seeds[..]];
+                let mint_type = MintType::try_from(market.prc_mint_type).map_err(|_| ErrorCode::InvalidParameters)?;
+                perform_signed_transfer(ctx.remaining_accounts, signer, mint_type, 0, tokens_received,
+                    &ctx.accounts.prc_vault.to_account_info(),          // From
+                    &ctx.accounts.user_prc_token.to_account_info(),     // To
+                    &ctx.accounts.agent.to_account_info(),              // Auth
+                    &ctx.accounts.spl_token_prog.to_account_info(),     // SPL Token Program
+                )?;
+            }
         }
         if *acc_result.key != *acc_user.key {
             store_struct::<TradeResult>(&result, acc_result)?;
@@ -2589,28 +2687,30 @@ pub mod aqua_dex {
             tokens_received == inp_net_price
         };
 
-        msg!("atellix-log");
-        emit!(OrderEvent {
-            event_type: 116790064293172396704069821733243480358, // solana/program/aqua-dex/market_ask/order
-            action_id: state_upd.action_counter,
-            market: market.key(),
-            user: acc_user.key(),
-            market_token: ctx.accounts.user_mkt_token.key(),
-            pricing_token: ctx.accounts.user_prc_token.key(),
-            order_id: result.order_id,
-            order_side: Side::Ask as u8,
-            filled: was_filled,
-            tokens_received: result.tokens_received,
-            tokens_sent: result.tokens_sent,
-            tokens_fee: result.tokens_fee,
-            posted: result.posted_quantity > 0,
-            posted_quantity: result.posted_quantity,
-            order_price: inp_net_price,
-            order_quantity: inp_quantity,
-            expires: 0,
-        });
+        if !inp_preview {
+            msg!("atellix-log");
+            emit!(OrderEvent {
+                event_type: 116790064293172396704069821733243480358, // solana/program/aqua-dex/market_ask/order
+                action_id: state_upd.action_counter,
+                market: market.key(),
+                user: acc_user.key(),
+                market_token: ctx.accounts.user_mkt_token.key(),
+                pricing_token: ctx.accounts.user_prc_token.key(),
+                order_id: result.order_id,
+                order_side: Side::Ask as u8,
+                filled: was_filled,
+                tokens_received: result.tokens_received,
+                tokens_sent: result.tokens_sent,
+                tokens_fee: result.tokens_fee,
+                posted: result.posted_quantity > 0,
+                posted_quantity: result.posted_quantity,
+                order_price: inp_net_price,
+                order_quantity: inp_quantity,
+                expires: 0,
+            });
+        }
 
-        Ok(())
+        Ok(result)
     }
 
     pub fn cancel_order<'a, 'b, 'c, 'info>(ctx: Context<'a, 'b, 'c, 'info, CancelOrder<'info>>,
@@ -4238,6 +4338,10 @@ pub struct VaultWithdrawEvent {
 pub enum ErrorCode {
     #[msg("Access denied")]
     AccessDenied,
+    #[msg("Token account frozen")]
+    TokenAccountFrozen,
+    #[msg("Insufficient tokens")]
+    InsufficientTokens,
     #[msg("Market closed")]
     MarketClosed,
     #[msg("Account not found")]

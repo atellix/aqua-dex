@@ -135,7 +135,7 @@ async function readMarketSpec() {
     withdrawResultRent = await provider.connection.getMinimumBalanceForRentExemption(withdrawResultBytes)
 }
 
-async function limitOrder(orderType, user, result, qty, price) {
+async function limitOrder(orderType, user, result, qty, price, preview) {
     var userToken1 = await associatedTokenAddress(user.publicKey, tokenMint1)
     var userToken2 = await associatedTokenAddress(user.publicKey, tokenMint2)
     var mktState = await aquadex.account.marketState.fetch(marketStatePK)
@@ -186,6 +186,7 @@ async function limitOrder(orderType, user, result, qty, price) {
             true,
             false,
             new anchor.BN(0),               // Order expiry
+            preview,                        // Preview
             rollover,                       // Rollover settlement log
             params,
         ))
@@ -196,6 +197,7 @@ async function limitOrder(orderType, user, result, qty, price) {
             true,
             false,
             new anchor.BN(0),               // Order expiry
+            preview,                        // Preview
             rollover,                       // Rollover settlement log
             params,
         ))
@@ -234,8 +236,8 @@ async function main() {
         var userWallet = importSecretKey(user.secret)
         var userToken1 = await associatedTokenAddress(userWallet.publicKey, tokenMint1)
         var userToken2 = await associatedTokenAddress(userWallet.publicKey, tokenMint2)
-        //console.log(await limitOrder('bid', userWallet, resultData1, 1 * (10**9), 15 * (10**6)))
-        console.log(await limitOrder('ask', userWallet, resultData1, 1 * (10**9), 15 * (10**6)))
+        //console.log(await limitOrder('bid', userWallet, resultData1, 1 * (10**9), 15 * (10**6) false))
+        console.log(await limitOrder('ask', userWallet, resultData1, 1 * (10**9), 7 * (10**6), true))
         var res = await aquadex.account.tradeResult.fetch(resultData1.publicKey)
         console.log(formatOrder(res))
 

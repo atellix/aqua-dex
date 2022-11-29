@@ -181,13 +181,14 @@ async function main() {
     var order1
 
     if (true) {
-        console.log('Limit Ask 1')
-        console.log(await aquadex.rpc.limitAsk(
+        console.log('Limit Bid 1')
+        console.log(await aquadex.rpc.limitBid(
             new anchor.BN(1 * (10**9)),      // Quantity
             new anchor.BN(7.82 * (10**6)),   // Price
             true,                            // Post
             false,                           // Fill
             new anchor.BN(0),                // Order expiry
+            false,                           // Preview mode
             false,                           // Settlement Log Rollover
             {
                 accounts: {
@@ -216,10 +217,10 @@ async function main() {
 
     if (false) {
         console.log('Cancel Order 1')
-        var orderId = decodeOrderId('00000000vwap00000000000008')
+        var orderId = decodeOrderId('00000000ex9e1zzzzzzzzzzzzw')
         //var orderId = order1
         console.log(await aquadex.rpc.cancelOrder(
-            1, // 0 - Bid, 1 - Ask
+            0, // 0 - Bid, 1 - Ask
             orderId,
             {
                 accounts: {
