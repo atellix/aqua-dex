@@ -1,3 +1,4 @@
+use crate::program::AquaDex;
 use std::{ io::Cursor, string::String, result::Result as FnResult, mem::size_of, convert::TryFrom };
 use bytemuck::{ Pod, Zeroable, cast_slice_mut, cast_slice };
 use num_enum::{ TryFromPrimitive, IntoPrimitive };
@@ -234,10 +235,6 @@ pub struct TradeEntry {
 }
 unsafe impl Zeroable for TradeEntry {}
 unsafe impl Pod for TradeEntry {}
-
-fn get_version() -> SemverRelease {
-    SemverRelease { major: VERSION_MAJOR, minor: VERSION_MINOR, patch: VERSION_PATCH }
-}
 
 #[inline]
 fn map_datatype(data_type: DT) -> u16 {
@@ -745,11 +742,30 @@ fn log_trade(
 pub mod aqua_dex {
     use super::*;
 
-    pub fn version(ctx: Context<Version>) -> anchor_lang::Result<()> {
-        // TODO: Make this a PDA and store it once
-        let acc_result = &ctx.accounts.result.to_account_info();
-        let version = get_version();
-        store_struct::<SemverRelease>(&version, acc_result)?;
+    pub fn store_metadata(ctx: Context<UpdateMetadata>,
+        inp_program_name: String,
+        inp_developer_name: String,
+        inp_developer_url: String,
+        inp_source_url: String,
+        inp_verify_url: String,
+    ) -> anchor_lang::Result<()> {
+        let md = &mut ctx.accounts.program_info;
+        md.semvar_major = VERSION_MAJOR;
+        md.semvar_minor = VERSION_MINOR;
+        md.semvar_patch = VERSION_PATCH;
+        md.program = ctx.accounts.program.key();
+        md.program_name = inp_program_name;
+        md.developer_name = inp_developer_name;
+        md.developer_url = inp_developer_url;
+        md.source_url = inp_source_url;
+        md.verify_url = inp_verify_url;
+        msg!("Program: {}", ctx.accounts.program.key.to_string());
+        msg!("Program Name: {}", md.program_name.as_str());
+        msg!("Version: {}.{}.{}", VERSION_MAJOR.to_string(), VERSION_MINOR.to_string(), VERSION_PATCH.to_string());
+        msg!("Developer Name: {}", md.developer_name.as_str());
+        msg!("Developer URL: {}", md.developer_url.as_str());
+        msg!("Source URL: {}", md.source_url.as_str());
+        msg!("Verify URL: {}", md.verify_url.as_str());
         Ok(())
     }
 
@@ -3551,6 +3567,19 @@ pub mod aqua_dex {
 }
 
 #[derive(Accounts)]
+pub struct UpdateMetadata<'info> {
+    #[account(constraint = program.programdata_address().unwrap() == Some(program_data.key()))]
+    pub program: Program<'info, AquaDex>,
+    #[account(constraint = program_data.upgrade_authority_address == Some(program_admin.key()))]
+    pub program_data: Account<'info, ProgramData>,
+    #[account(mut)]
+    pub program_admin: Signer<'info>,
+    #[account(init_if_needed, seeds = [program_id.as_ref(), b"metadata"], bump, payer = program_admin, space = 584)]
+    pub program_info: Account<'info, ProgramMetadata>,
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
 #[instruction(inp_agent_nonce: u8)]
 pub struct CreateMarket<'info> {
     /// CHECK: ok
@@ -3956,12 +3985,20 @@ pub struct ExtendLog<'info> {
     pub settle: AccountInfo<'info>,
 }
 
-#[derive(Accounts)]
-pub struct Version<'info> {
-    /// CHECK: ok
-    #[account(mut)]
-    pub result: AccountInfo<'info>,
+#[account]
+pub struct ProgramMetadata {
+    pub semvar_major: u32,
+    pub semvar_minor: u32,
+    pub semvar_patch: u32,
+    pub program: Pubkey,
+    pub program_name: String,   // Max len 60
+    pub developer_name: String, // Max len 60
+    pub developer_url: String,  // Max len 124
+    pub source_url: String,     // Max len 124
+    pub verify_url: String,     // Max len 124
 }
+// 8 + (4 * 3) + 32 + (4 * 5) + (64 * 2) + (128 * 3)
+// Data length (with discrim): 584 bytes
 
 #[account]
 pub struct Market {
@@ -4195,13 +4232,6 @@ pub struct VaultWithdrawEvent {
     pub manager: bool,
     pub market_tokens: u64,
     pub pricing_tokens: u64,
-}
-
-#[account]
-pub struct SemverRelease {
-    pub major: u32,
-    pub minor: u32,
-    pub patch: u32,
 }
 
 #[error_code]
