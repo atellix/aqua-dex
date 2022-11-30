@@ -2,7 +2,7 @@ const { Buffer } = require('buffer')
 const { DateTime } = require("luxon")
 const { v4: uuidv4, parse: uuidparse } = require('uuid')
 const { PublicKey, Keypair, SystemProgram, SYSVAR_RENT_PUBKEY, Transaction } = require('@solana/web3.js')
-const { TOKEN_PROGRAM_ID, transfer, getOrCreateAssociatedTokenAccount } = require('@solana/spl-token')
+const { TOKEN_PROGRAM_ID, transfer, createSyncNativeInstruction, getOrCreateAssociatedTokenAccount } = require('@solana/spl-token')
 const { promisify } = require('util')
 const exec = promisify(require('child_process').exec)
 const fs = require('fs').promises
@@ -64,6 +64,8 @@ async function main() {
         var airdropConfirm = await provider.connection.confirmTransaction(airdropSig)
         console.log('User: ' + (i + 1) + ' PK: ' + user.pubkey + ' Airdrop Complete')
         console.log(airdropSig)*/
+
+        // Send SOL for running TXs
         tx = new Transaction()
         tx.add(SystemProgram.transfer({
             fromPubkey: provider.wallet.publicKey, 
@@ -88,6 +90,19 @@ async function main() {
             userToken2 = await getOrCreateAssociatedTokenAccount(provider.connection, userWallet, tokenMint2, userWallet.publicKey)
         } catch (error) {
             console.log('Create User Token 2: Error: ' + error)
+        }
+
+        tx2 = new Transaction()
+        tx2.add(SystemProgram.transfer({
+            fromPubkey: provider.wallet.publicKey, 
+            lamports: anchor.web3.LAMPORTS_PER_SOL * 3,
+            toPubkey: userToken1.address,
+        }))
+        tx2.add(createSyncNativeInstruction(userToken1.address))
+        try {
+            console.log('Transfer/Wrap SOL: ' + await provider.sendAndConfirm(tx2))
+        } catch (error) {
+            console.log('Transfer/Wrap SOL: Error: ' + error)
         }
 
         var ascToken2 = await associatedTokenAddress(userWallet.publicKey, tokenMint2)

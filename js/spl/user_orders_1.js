@@ -237,26 +237,30 @@ async function main() {
         var userToken1 = await associatedTokenAddress(userWallet.publicKey, tokenMint1)
         var userToken2 = await associatedTokenAddress(userWallet.publicKey, tokenMint2)
         //console.log(await limitOrder('bid', userWallet, resultData1, 1 * (10**9), 15 * (10**6) false))
-        console.log(await limitOrder('ask', userWallet, resultData1, 1 * (10**9), 7 * (10**6), true))
-        var res = await aquadex.account.tradeResult.fetch(resultData1.publicKey)
-        console.log(formatOrder(res))
+        //console.log(await limitOrder('ask', userWallet, resultData1, 1 * (10**9), 7 * (10**6), true))
+        //var res = await aquadex.account.tradeResult.fetch(resultData1.publicKey)
+        //console.log(formatOrder(res))
 
-        /*if ((i % 2) == 0) {
+        var rnd1 = new Number(Math.random()).toFixed(4)
+        var rnd2 = new Number(Math.random() * 8).toFixed(1)
+        //console.log('Random Adjustments: ' + rnd1 + ', ' + rnd2)
+        var qty = (new Number(rnd1) + 1) * (10**9)
+        var price = (10 - new Number(rnd2)) * (10**6)
+        console.log('Qty: ' + qty + ' Price: ' + price)
+        if ((i % 2) == 0) {
             console.log('Ask')
-            await limitOrder('ask', userWallet, resultData1, 10, 5)
+            await limitOrder('ask', userWallet, resultData1, qty.toFixed(0), price.toFixed(0), false)
             var res = await aquadex.account.tradeResult.fetch(resultData1.publicKey)
             console.log(formatOrder(res))
         } else {
             console.log('Bid')
-            await limitOrder('bid', userWallet, resultData1, 10, 5)
+            await limitOrder('bid', userWallet, resultData1, qty.toFixed(0), price.toFixed(0), false)
             var res = await aquadex.account.tradeResult.fetch(resultData1.publicKey)
             console.log(formatOrder(res))
-        }*/
-
-        /*if (i == 1) {
-            process.exit(0)
-        }*/
-        break
+        }
+        if (i === 11) {
+            break
+        }
     }
 }
 

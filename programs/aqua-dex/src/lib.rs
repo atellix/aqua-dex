@@ -1361,7 +1361,7 @@ pub mod aqua_dex {
                             evict_order.amount().to_string(),
                             Order::price(evict_node.key()).to_string(),
                         );
-                        let evict_total = evict_amount.checked_mul(Order::price(evict_node.key())).ok_or(error!(ErrorCode::Overflow))?;
+                        let evict_total = scale_price(evict_amount, Order::price(evict_node.key()), mkt_decimal_factor)?;
                         log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &evict_node.owner(), false, evict_total)?;
                         map_remove(ob, DT::BidOrder, evict_node.key())?;
                         Order::free_index(ob, DT::BidOrder, evict_node.slot())?;
