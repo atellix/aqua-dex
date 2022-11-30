@@ -726,10 +726,11 @@ fn log_trade(
     ts: i64,
 ) -> anchor_lang::Result<()> {
     let trade_header = tlog.header_mut::<TradeLogHeader>(0);
-    let next_trade = trade_header.trade_count.checked_add(1).ok_or(error!(ErrorCode::Overflow))?;
-    trade_header.trade_count = next_trade;
-    let log_index = next_trade.rem_euclid(trade_header.entry_max).checked_sub(1).ok_or(error!(ErrorCode::Overflow))?;
+    let mut next_trade = trade_header.trade_count;
+    let log_index = next_trade.rem_euclid(trade_header.entry_max);
     let log_entry = tlog.index_mut::<TradeEntry>(0, log_index as usize);
+    next_trade = next_trade.checked_add(1).ok_or(error!(ErrorCode::Overflow))?;
+    trade_header.trade_count = next_trade;
     log_entry.event_type = event_type;
     log_entry.action_id = action_id;
     log_entry.trade_id = next_trade;
