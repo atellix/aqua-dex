@@ -247,16 +247,21 @@ async function main() {
         var qty = (new Number(rnd1) + 1) * (10**9)
         var price = (10 - new Number(rnd2)) * (10**6)
         console.log('Qty: ' + qty + ' Price: ' + price)
-        if ((i % 2) == 0) {
-            console.log('Ask')
-            await limitOrder('ask', userWallet, resultData1, qty.toFixed(0), price.toFixed(0), false)
-            var res = await aquadex.account.tradeResult.fetch(resultData1.publicKey)
-            console.log(formatOrder(res))
-        } else {
-            console.log('Bid')
-            await limitOrder('bid', userWallet, resultData1, qty.toFixed(0), price.toFixed(0), false)
-            var res = await aquadex.account.tradeResult.fetch(resultData1.publicKey)
-            console.log(formatOrder(res))
+        try {
+            if ((i % 2) == 0) {
+                console.log('Ask')
+                console.log(await limitOrder('ask', userWallet, resultData1, qty.toFixed(0), price.toFixed(0), false))
+                var res = await aquadex.account.tradeResult.fetch(resultData1.publicKey)
+                console.log(formatOrder(res))
+            } else {
+                console.log('Bid')
+                console.log(await limitOrder('bid', userWallet, resultData1, qty.toFixed(0), price.toFixed(0), false))
+                var res = await aquadex.account.tradeResult.fetch(resultData1.publicKey)
+                console.log(formatOrder(res))
+            }
+        } catch (error) {
+            console.log('Error')
+            console.log(error)
         }
         if (i === 11) {
             break

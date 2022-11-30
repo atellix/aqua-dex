@@ -448,7 +448,7 @@ fn log_settlement(
     mkt_token: bool,
     amount: u64,
 ) -> anchor_lang::Result<()> {
-    msg!("Atellix: Log Settlement");
+    //msg!("Atellix: Log Settlement");
     let new_balance: u64;
     let mut log_key: Pubkey = settle_a.key();
     let owner_id: u128 = CritMap::bytes_hash(owner.as_ref());
@@ -1351,7 +1351,7 @@ pub mod aqua_dex {
                         let evict_order = ob.index::<Order>(OrderDT::BidOrder as u16, evict_node.slot() as usize);
                         // Only evict if the price is better
                         if inp_price <= Order::price(evict_node.key()) {
-                            msg!("Atellix: Orderbook Full - Price Does Not Exceed Evicted Order");
+                            msg!("Atellix: Orderbook Full - Price does not exceed evicted order");
                             return Err(ErrorCode::OrderbookFull.into());
                         }
                         let evict_amount: u64 = evict_order.amount();
@@ -1751,7 +1751,7 @@ pub mod aqua_dex {
                         let evict_order = ob.index::<Order>(OrderDT::AskOrder as u16, evict_node.slot() as usize);
                         // Only evict if the price is better
                         if inp_price >= Order::price(evict_node.key()) {
-                            msg!("Atellix: Orderbook Full - Price Is Not Below Evicted Order");
+                            msg!("Atellix: Orderbook Full - Price is not below evicted order");
                             return Err(ErrorCode::OrderbookFull.into());
                         }
                         let evict_amount: u64 = evict_order.amount();
