@@ -726,11 +726,10 @@ fn log_trade(
     ts: i64,
 ) -> anchor_lang::Result<()> {
     let trade_header = tlog.header_mut::<TradeLogHeader>(0);
-    let mut next_trade = trade_header.trade_count;
-    let log_index = next_trade.rem_euclid(trade_header.entry_max);
-    let log_entry = tlog.index_mut::<TradeEntry>(0, log_index as usize);
-    next_trade = next_trade.checked_add(1).ok_or(error!(ErrorCode::Overflow))?;
+    let log_index = trade_header.trade_count.rem_euclid(trade_header.entry_max);
+    let next_trade = trade_header.trade_count.checked_add(1).ok_or(error!(ErrorCode::Overflow))?;
     trade_header.trade_count = next_trade;
+    let log_entry = tlog.index_mut::<TradeEntry>(0, log_index as usize);
     log_entry.event_type = event_type;
     log_entry.action_id = action_id;
     log_entry.trade_id = next_trade;
@@ -2862,7 +2861,7 @@ pub mod aqua_dex {
         let (header, page_table) = mut_array_refs![log_data, size_of::<AccountsHeader>(); .. ;];
         let settle_header: &mut [AccountsHeader] = cast_slice_mut(header);
         verify_matching_accounts(&settle_header[0].market, &market.key(), Some(String::from("Invalid market")))?;
-        let close_log: bool = settle_header[0].items == 1 && settle_header[0].prev != Pubkey::default() && settle_header[1].next != Pubkey::default();
+        let close_log: bool = settle_header[0].items == 1 && settle_header[0].prev != Pubkey::default() && settle_header[0].next != Pubkey::default();
         let offset: usize = if close_log { 2 } else { 0 };
         let sl = SlabPageAlloc::new(page_table);
         let has_item = map_get(sl, DT::Account, owner_id);

@@ -105,8 +105,8 @@ async function main() {
     const marketPK = new PublicKey(mktData.market)
     const marketStatePK = new PublicKey(mktData.marketState)
     const ordersPK = new PublicKey(mktData.orders)
-    const settle1PK = new PublicKey(mktData.settle1)
-    const settle2PK = new PublicKey(mktData.settle2)
+    //const settle1PK = new PublicKey(mktData.settle1)
+    //const settle2PK = new PublicKey(mktData.settle2)
 
     const tokenMint1 = new PublicKey(mktData.tokenMint1) // Market token
     const tokenMint2 = new PublicKey(mktData.tokenMint2) // Pricing token
@@ -128,7 +128,9 @@ async function main() {
     console.log('User Token: ' + userToken2.pubkey)
     console.log('Vault Token: ' + tokenVault2.pubkey)
 
-    //res = await aquadex.account.market.fetch(marketPK)
+    const marketState = await aquadex.account.marketState.fetch(marketStatePK)
+    const settle1PK = marketState.settleA
+    const settle2PK = marketState.settleB
     //console.log(res)
 
     var resultAccounts = {}

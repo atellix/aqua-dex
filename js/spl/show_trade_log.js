@@ -99,7 +99,7 @@ function decodeTradeLogVec(pageTableEntry, pages) {
             }
         }
     }
-    logSpec.logs.reverse()
+    logSpec.logs = logSpec.logs.sort((a, b) => { return b.trade_id - a.trade_id })
     return logSpec
 }
 
