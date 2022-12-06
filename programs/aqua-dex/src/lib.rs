@@ -803,6 +803,7 @@ pub mod aqua_dex {
         inp_manager_cancel: bool,
         inp_expire_enable: bool,
         inp_expire_min: i64,
+        inp_min_quantity: u64,
         inp_taker_fee: u32,
         inp_log_fee: u64,
         inp_log_rebate: u64,
@@ -963,6 +964,7 @@ pub mod aqua_dex {
             manager_cancel: inp_manager_cancel,
             expire_enable: inp_expire_enable,
             expire_min: inp_expire_min,
+            min_quantity: inp_min_quantity,
             log_fee: inp_log_fee,
             log_rebate: inp_log_rebate,
             log_reimburse: inp_log_reimburse,
@@ -1101,6 +1103,7 @@ pub mod aqua_dex {
             msg!("Market closed");
             return Err(ErrorCode::MarketClosed.into());
         }
+        require!(inp_quantity > 0 && inp_quantity >= market.min_quantity, ErrorCode::QuantityBelowMinimum);
 
         verify_matching_accounts(&market.state, &market_state.key(), Some(String::from("Invalid market state")))?;
         verify_matching_accounts(&market.agent, &acc_agent.key, Some(String::from("Invalid market agent")))?;
@@ -1502,6 +1505,7 @@ pub mod aqua_dex {
             msg!("Market closed");
             return Err(ErrorCode::MarketClosed.into());
         }
+        require!(inp_quantity > 0 && inp_quantity >= market.min_quantity, ErrorCode::QuantityBelowMinimum);
 
         verify_matching_accounts(&market.state, &market_state.key(), Some(String::from("Invalid market state")))?;
         verify_matching_accounts(&market.agent, &acc_agent.key, Some(String::from("Invalid market agent")))?;
@@ -1896,6 +1900,9 @@ pub mod aqua_dex {
         if !market.active {
             msg!("Market closed");
             return Err(ErrorCode::MarketClosed.into());
+        }
+        if inp_by_quantity {
+            require!(inp_quantity >= market.min_quantity, ErrorCode::QuantityBelowMinimum);
         }
 
         verify_matching_accounts(&market.state, &market_state.key(), Some(String::from("Invalid market state")))?;
@@ -2317,6 +2324,9 @@ pub mod aqua_dex {
         if !market.active {
             msg!("Market closed");
             return Err(ErrorCode::MarketClosed.into());
+        }
+        if inp_by_quantity {
+            require!(inp_quantity >= market.min_quantity, ErrorCode::QuantityBelowMinimum);
         }
 
         verify_matching_accounts(&market.state, &market_state.key(), Some(String::from("Invalid market state")))?;
@@ -3359,6 +3369,7 @@ pub mod aqua_dex {
         inp_active: bool,
         inp_expire_enable: bool,
         inp_expire_min: i64,
+        inp_min_quantity: u64,
         inp_taker_fee: u32,
         inp_log_fee: u64,
         inp_log_rebate: u64,
@@ -3375,6 +3386,7 @@ pub mod aqua_dex {
         market.active = inp_active;
         market.expire_enable = inp_expire_enable;
         market.expire_min = inp_expire_min;
+        market.min_quantity = inp_min_quantity;
         market.taker_fee = inp_taker_fee;
         market.log_fee = inp_log_fee;
         market.log_rebate = inp_log_rebate;
@@ -4107,6 +4119,7 @@ pub struct Market {
     pub manager_cancel: bool,           // Allow "manager_cancel_order" to let the market manager cancel orders and move user tokens to the settlement log (FALSE for trustless mode)
     pub expire_enable: bool,            // Enable order expiration
     pub expire_min: i64,                // Minimum time an order must be posted before expiration
+    pub min_quantity: u64,              // Minimum quantity to trade (0 for no minimum)
     pub log_fee: u64,                   // Fee for settlement log space for posted orders (lamports)
     pub log_rebate: u64,                // Rebate for withdrawal (lamports)
     pub log_reimburse: u64,             // Reimbursement for adding a new settlement log (lamports)
@@ -4372,6 +4385,8 @@ pub enum ErrorCode {
     OrderbookFull,
     #[msg("Settlement log account does not match market, please update market data and retry")]
     RetrySettlementAccount,
+    #[msg("Quantity below minimum")]
+    QuantityBelowMinimum,
     #[msg("Overflow")]
     Overflow,
 }

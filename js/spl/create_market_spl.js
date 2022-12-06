@@ -177,6 +177,7 @@ async function main() {
         false,                                  // Manager order cancel (FALSE for trustless mode)
         true,                                   // Expire enable
         new anchor.BN(1),                       // Min expire
+        new anchor.BN(0),                       // Min quantity
         new anchor.BN(0),                       // Taker fee (X / 10,000,000)
         new anchor.BN(0),                       // Log fee (reserve space in settlement log)
         new anchor.BN(0),                       // Log rebate (when closing settled position)
