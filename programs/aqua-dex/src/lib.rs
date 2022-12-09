@@ -1016,6 +1016,10 @@ pub mod aqua_dex {
         msg!("Atellix: Store Market State");
         store_struct::<MarketState>(&state, acc_state)?;
 
+        let market_admin = &mut ctx.accounts.admin;
+        market_admin.fee_manager = ctx.accounts.fee_manager.key();
+        market_admin.vault_manager = ctx.accounts.vault_manager.key();
+
         msg!("Atellix: Allocate Orderbook");
         let order_data: &mut[u8] = &mut acc_orders.try_borrow_mut_data()?;
         let order_slab = SlabPageAlloc::new(order_data);
@@ -3335,11 +3339,12 @@ pub mod aqua_dex {
         inp_amount: u64,
     ) -> anchor_lang::Result<()> {
         let market = &ctx.accounts.market;
+        let admin = &ctx.accounts.admin;
         let state = &mut ctx.accounts.state;
         let acc_manager = &ctx.accounts.manager.to_account_info();
 
-        if market.manager != *acc_manager.key {
-            msg!("Not manager");
+        if admin.fee_manager != *acc_manager.key {
+            msg!("Not fee manager");
             return Err(ErrorCode::AccessDenied.into());
         }
         verify_matching_accounts(&market.state, &state.key(), Some(String::from("Invalid market state")))?;
@@ -3370,13 +3375,14 @@ pub mod aqua_dex {
 
     pub fn manager_withdraw_fees<'a, 'b, 'c, 'info>(ctx: Context<'a, 'b, 'c, 'info, ManagerWithdrawFees<'info>>) -> anchor_lang::Result<u64> {
         let market = &ctx.accounts.market;
+        let admin = &ctx.accounts.admin;
         let state = &mut ctx.accounts.state;
         let acc_agent = &ctx.accounts.agent.to_account_info();
         let acc_manager = &ctx.accounts.manager.to_account_info();
         let acc_prc_vault = &ctx.accounts.prc_vault.to_account_info();
 
-        if market.manager != *acc_manager.key {
-            msg!("Not manager");
+        if admin.fee_manager != *acc_manager.key {
+            msg!("Not fee manager");
             return Err(ErrorCode::AccessDenied.into());
         }
         verify_matching_accounts(&market.state, &state.key(), Some(String::from("Invalid market state")))?;
@@ -3425,6 +3431,7 @@ pub mod aqua_dex {
         inp_log_rebate: u64,
         inp_log_reimburse: u64,
     ) -> anchor_lang::Result<()> {
+        let admin = &mut ctx.accounts.admin;
         let market = &mut ctx.accounts.market;
         let acc_manager = &ctx.accounts.manager.to_account_info();
 
@@ -3442,30 +3449,12 @@ pub mod aqua_dex {
         market.log_rebate = inp_log_rebate;
         market.log_reimburse = inp_log_reimburse;
 
+        admin.fee_manager = ctx.accounts.fee_manager.key();
+        admin.vault_manager = ctx.accounts.vault_manager.key();
+
         Ok(())
     }
 
-    // Create user vaults (manager only)
-    pub fn create_vault<'a, 'b, 'c, 'info>(ctx: Context<'a, 'b, 'c, 'info, CreateVault<'info>>) -> anchor_lang::Result<()> {
-        let market = &ctx.accounts.market;
-        let vault = &mut ctx.accounts.vault;
-        let acc_manager = &ctx.accounts.manager.to_account_info();
-
-        if market.manager != *acc_manager.key {
-            msg!("Not manager");
-            return Err(ErrorCode::AccessDenied.into());
-        }
-
-        if !vault.initialized { // Only initialize once
-            vault.initialized = true;
-            vault.market = ctx.accounts.market.key();
-            vault.owner = ctx.accounts.owner.key();
-            vault.mkt_tokens = 0;
-            vault.prc_tokens = 0;
-        }
-        Ok(())
-    }
- 
     // Move tokens from the settlement log to a user's individual vault (vault manager only)
     // This is optional market "housekeeping". If a market manager moves balances from the settlement logs to user vaults before the
     // 1st settlement log file fills up then there will never be a need to rollover settlement logs and possibly require repeating trade transactions.
@@ -3475,6 +3464,7 @@ pub mod aqua_dex {
     // Keeping open slots in the 1st settlement log enables all trades to be processed immediately without any need of a possible data refresh.
     pub fn vault_deposit<'a, 'b, 'c, 'info>(ctx: Context<'a, 'b, 'c, 'info, VaultDeposit<'info>>) -> anchor_lang::Result<()> {
         let market = &ctx.accounts.market;
+        let admin = &ctx.accounts.admin;
         let state = &mut ctx.accounts.state;
         let vault = &mut ctx.accounts.vault;
         let acc_manager = &ctx.accounts.manager.to_account_info();
@@ -3484,11 +3474,19 @@ pub mod aqua_dex {
         let acc_settle_next = &ctx.accounts.settle_next.to_account_info();
 
         // Verify
-        if market.manager != *acc_manager.key {
-            msg!("Not manager");
+        if admin.vault_manager != *acc_manager.key {
+            msg!("Not vault manager");
             return Err(ErrorCode::AccessDenied.into());
         }
         verify_matching_accounts(&market.state, &state.key(), Some(String::from("Invalid market state")))?;
+
+        if !vault.initialized { // Only initialize once
+            vault.initialized = true;
+            vault.market = ctx.accounts.market.key();
+            vault.owner = ctx.accounts.owner.key();
+            vault.mkt_tokens = 0;
+            vault.prc_tokens = 0;
+        }
 
         let mut market_tokens: u64 = 0;
         let mut pricing_tokens: u64 = 0;
@@ -3721,11 +3719,11 @@ pub mod aqua_dex {
     }
 
     pub fn close_vault(ctx: Context<CloseVault>) -> anchor_lang::Result<()> {
-        let market = &ctx.accounts.market;
+        let admin = &ctx.accounts.admin;
         let vault = &mut ctx.accounts.vault;
         let acc_manager = &ctx.accounts.manager.to_account_info();
 
-        if market.manager != *acc_manager.key {
+        if admin.vault_manager != *acc_manager.key {
             msg!("Not vault manager");
             return Err(ErrorCode::AccessDenied.into());
         }
@@ -3769,10 +3767,17 @@ pub struct CreateMarket<'info> {
     #[account(zero)]
     pub state: AccountInfo<'info>,
     /// CHECK: ok
+    #[account(init, seeds = [market.key().as_ref(), b"admin"], bump, payer = manager, space = 72)]
+    pub admin: Account<'info, MarketAdmin>,
+    /// CHECK: ok
     #[account(seeds = [market.key().as_ref()], bump = inp_agent_nonce)]
     pub agent: AccountInfo<'info>,
     #[account(mut)]
     pub manager: Signer<'info>,
+    /// CHECK: ok
+    pub fee_manager: AccountInfo<'info>,
+    /// CHECK: ok
+    pub vault_manager: AccountInfo<'info>,
     /// CHECK: ok
     pub mkt_mint: AccountInfo<'info>,
     /// CHECK: ok
@@ -4013,28 +4018,15 @@ pub struct LogStatus<'info> {
 }
 
 #[derive(Accounts)]
-pub struct CreateVault<'info> {
-    pub market: Account<'info, Market>,
-    /// CHECK: ok
-    #[account(mut, signer)]
-    pub manager: AccountInfo<'info>,
-    /// CHECK: ok
-    pub owner: AccountInfo<'info>,
-    #[account(init_if_needed, seeds = [market.key().as_ref(), owner.key().as_ref()], bump, payer = manager, space = 89)]
-    pub vault: Account<'info, UserVault>,
-    /// CHECK: ok
-    #[account(address = system_program::ID)]
-    pub system_program: AccountInfo<'info>,
-}
-
-#[derive(Accounts)]
 pub struct VaultDeposit<'info> {
     pub market: Account<'info, Market>,
     #[account(mut)]
     pub state: Account<'info, MarketState>,
+    #[account(seeds = [market.key().as_ref(), b"admin"], bump)]
+    pub admin: Account<'info, MarketAdmin>,
     /// CHECK: ok
-    #[account(signer)]
-    pub manager: AccountInfo<'info>,
+    #[account(mut)]
+    pub manager: Signer<'info>,
     /// CHECK: ok
     pub owner: AccountInfo<'info>,
     /// CHECK: ok
@@ -4046,8 +4038,11 @@ pub struct VaultDeposit<'info> {
     /// CHECK: ok
     #[account(mut)]
     pub settle_next: AccountInfo<'info>,
-    #[account(mut, seeds = [market.key().as_ref(), owner.key().as_ref()], bump)]
+    #[account(init_if_needed, seeds = [market.key().as_ref(), owner.key().as_ref()], bump, payer = manager, space = 89)]
     pub vault: Account<'info, UserVault>,
+    /// CHECK: ok
+    #[account(address = system_program::ID)]
+    pub system_program: AccountInfo<'info>,
 }
 
 #[derive(Accounts)]
@@ -4087,6 +4082,8 @@ pub struct ManagerTransferSol<'info> {
     pub market: Account<'info, Market>,
     #[account(mut)]
     pub state: Account<'info, MarketState>,
+    #[account(seeds = [market.key().as_ref(), b"admin"], bump)]
+    pub admin: Account<'info, MarketAdmin>,
     /// CHECK: ok
     #[account(mut, signer)]
     pub manager: AccountInfo<'info>,
@@ -4099,6 +4096,8 @@ pub struct ManagerWithdrawFees<'info> {
     pub state: Account<'info, MarketState>,
     /// CHECK: ok
     pub agent: AccountInfo<'info>,
+    #[account(seeds = [market.key().as_ref(), b"admin"], bump)]
+    pub admin: Account<'info, MarketAdmin>,
     /// CHECK: ok
     #[account(mut, signer)]
     pub manager: AccountInfo<'info>,
@@ -4117,9 +4116,15 @@ pub struct ManagerWithdrawFees<'info> {
 pub struct ManagerUpdateMarket<'info> {
     #[account(mut)]
     pub market: Account<'info, Market>,
+    #[account(mut, seeds = [market.key().as_ref(), b"admin"], bump)]
+    pub admin: Account<'info, MarketAdmin>,
     /// CHECK: ok
     #[account(mut, signer)]
     pub manager: AccountInfo<'info>,
+    /// CHECK: ok
+    pub fee_manager: AccountInfo<'info>,
+    /// CHECK: ok
+    pub vault_manager: AccountInfo<'info>,
 }
 
 #[derive(Accounts)]
@@ -4159,6 +4164,8 @@ pub struct ManagerVaultWithdraw<'info> {
 #[derive(Accounts)]
 pub struct CloseVault<'info> {
     pub market: Account<'info, Market>,
+    #[account(mut, seeds = [market.key().as_ref(), b"admin"], bump)]
+    pub admin: Account<'info, MarketAdmin>,
     /// CHECK: ok
     #[account(mut, signer)]
     pub manager: AccountInfo<'info>,
@@ -4248,6 +4255,12 @@ pub struct Market {
     pub prc_mint_type: u8,              // Token B mint type
     pub orders: Pubkey,                 // Orderbook Bid/Ask entries
     pub settle_0: Pubkey,               // The start of the settlement log
+}
+
+#[account]
+pub struct MarketAdmin {
+    pub fee_manager: Pubkey,            // Fee manager
+    pub vault_manager: Pubkey,          // Vault manager
 }
 
 #[account]
