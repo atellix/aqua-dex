@@ -85,6 +85,10 @@ async function main() {
     const settleBytes = 130 + (16384 * 8)
     const settleRent = await provider.connection.getMinimumBalanceForRentExemption(settleBytes)
 
+    console.log("Orders Rent: " + ordersRent)
+    console.log("TradeLog Rent: " + tradeLogRent)
+    console.log("Settle Rent: " + settleRent)
+
     const accountId1 = uuidv4()
     const accountBuf1 = Buffer.from(uuidparse(accountId1).reverse())
 
