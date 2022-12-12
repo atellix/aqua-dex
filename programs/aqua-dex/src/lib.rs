@@ -26,9 +26,9 @@ pub const VERSION_MINOR: u32 = 0;
 pub const VERSION_PATCH: u32 = 0;
 
 // TESTING
-pub const MAX_ORDERS: u32 = 500;        // Max orders on each side of the orderbook (16K * 7)
+pub const MAX_ORDERS: u32 = 500;        // Max orders on each side of the orderbook
 pub const MAX_TRADES: u32 = 100;        // Max trade entries in the trade log
-pub const MAX_ACCOUNTS: u32 = 1500;     // Max number of accounts per settlement data file (16K * 8)
+pub const MAX_ACCOUNTS: u32 = 1000;     // Max number of accounts per settlement data file
 pub const MAX_EVICTIONS: u32 = 10;      // Max number of orders to evict before aborting
 pub const MAX_EXPIRATIONS: u32 = 10;    // Max number of expired orders to remove before proceeding with current order
 
@@ -724,6 +724,7 @@ fn log_trade(
     taker_side: u8,
     amount: u64,
     price: u64,
+    fee: u64,
     ts: i64,
 ) -> anchor_lang::Result<()> {
     let trade_header = tlog.header_mut::<TradeLogHeader>(0);
@@ -754,6 +755,7 @@ fn log_trade(
         maker: *maker,
         taker: *taker,
         taker_side: taker_side,
+        taker_fee: fee,
         amount: amount,
         price: price,
         ts: ts,
@@ -1204,7 +1206,8 @@ pub mod aqua_dex {
                     tokens_filled = tokens_filled.checked_add(tokens_to_fill).ok_or(error!(ErrorCode::Overflow))?;
                     let tokens_part = scale_price(tokens_to_fill, posted_price, mkt_decimal_factor)?;
                     tokens_paid = tokens_paid.checked_add(tokens_part).ok_or(error!(ErrorCode::Overflow))?;
-                    tokens_fee = tokens_fee.checked_add(calculate_fee(market.taker_fee, tokens_part)?).ok_or(error!(ErrorCode::Overflow))?;
+                    let fee_part = calculate_fee(market.taker_fee, tokens_part)?;
+                    tokens_fee = tokens_fee.checked_add(fee_part).ok_or(error!(ErrorCode::Overflow))?;
                     msg!("Atellix: Filling - {} @ {}", tokens_part.to_string(), posted_price.to_string());
                     if !inp_preview {
                         log_trade(tlog,
@@ -1218,6 +1221,7 @@ pub mod aqua_dex {
                             Side::Bid as u8,
                             tokens_to_fill,
                             posted_price,
+                            fee_part,
                             clock_ts
                         )?;
                         map_remove(ob, DT::AskOrder, posted_node.key())?;
@@ -1233,7 +1237,8 @@ pub mod aqua_dex {
                     tokens_filled = tokens_filled.checked_add(posted_qty).ok_or(error!(ErrorCode::Overflow))?;
                     let tokens_part = scale_price(posted_qty, posted_price, mkt_decimal_factor)?;
                     tokens_paid = tokens_paid.checked_add(tokens_part).ok_or(error!(ErrorCode::Overflow))?;
-                    tokens_fee = tokens_fee.checked_add(calculate_fee(market.taker_fee, tokens_part)?).ok_or(error!(ErrorCode::Overflow))?;
+                    let fee_part = calculate_fee(market.taker_fee, tokens_part)?;
+                    tokens_fee = tokens_fee.checked_add(fee_part).ok_or(error!(ErrorCode::Overflow))?;
                     msg!("Atellix: Filling - {} @ {}", posted_qty.to_string(), posted_price.to_string());
                     if !inp_preview {
                         log_trade(tlog,
@@ -1247,6 +1252,7 @@ pub mod aqua_dex {
                             Side::Bid as u8,
                             posted_qty,
                             posted_price,
+                            fee_part,
                             clock_ts
                         )?;
                         map_remove(ob, DT::AskOrder, posted_node.key())?;
@@ -1260,7 +1266,8 @@ pub mod aqua_dex {
                     tokens_filled = tokens_filled.checked_add(tokens_to_fill).ok_or(error!(ErrorCode::Overflow))?;
                     let tokens_part = scale_price(tokens_to_fill, posted_price, mkt_decimal_factor)?;
                     tokens_paid = tokens_paid.checked_add(tokens_part).ok_or(error!(ErrorCode::Overflow))?;
-                    tokens_fee = tokens_fee.checked_add(calculate_fee(market.taker_fee, tokens_part)?).ok_or(error!(ErrorCode::Overflow))?;
+                    let fee_part = calculate_fee(market.taker_fee, tokens_part)?;
+                    tokens_fee = tokens_fee.checked_add(fee_part).ok_or(error!(ErrorCode::Overflow))?;
                     msg!("Atellix: Filling - {} @ {}", tokens_to_fill.to_string(), posted_price.to_string());
                     if !inp_preview {
                         log_trade(tlog,
@@ -1274,6 +1281,7 @@ pub mod aqua_dex {
                             Side::Bid as u8,
                             tokens_to_fill,
                             posted_price,
+                            fee_part,
                             clock_ts
                         )?;
                         let new_amount = posted_qty.checked_sub(tokens_to_fill).ok_or(error!(ErrorCode::Overflow))?;
@@ -1604,7 +1612,8 @@ pub mod aqua_dex {
                     tokens_filled = tokens_filled.checked_add(tokens_to_fill).ok_or(error!(ErrorCode::Overflow))?;
                     let tokens_part = scale_price(tokens_to_fill, posted_price, mkt_decimal_factor)?;
                     tokens_received = tokens_received.checked_add(tokens_part).ok_or(error!(ErrorCode::Overflow))?;
-                    tokens_fee = tokens_fee.checked_add(calculate_fee(market.taker_fee, tokens_part)?).ok_or(error!(ErrorCode::Overflow))?;
+                    let fee_part = calculate_fee(market.taker_fee, tokens_part)?;
+                    tokens_fee = tokens_fee.checked_add(fee_part).ok_or(error!(ErrorCode::Overflow))?;
                     msg!("Atellix: Filling - {} @ {}", tokens_part.to_string(), posted_price.to_string());
                     if !inp_preview {
                         log_trade(tlog,
@@ -1618,6 +1627,7 @@ pub mod aqua_dex {
                             Side::Ask as u8,
                             tokens_to_fill,
                             posted_price,
+                            fee_part,
                             clock_ts
                         )?;
                         map_remove(ob, DT::BidOrder, posted_node.key())?;
@@ -1633,7 +1643,8 @@ pub mod aqua_dex {
                     tokens_filled = tokens_filled.checked_add(posted_qty).ok_or(error!(ErrorCode::Overflow))?;
                     let tokens_part = scale_price(posted_qty, posted_price, mkt_decimal_factor)?;
                     tokens_received = tokens_received.checked_add(tokens_part).ok_or(error!(ErrorCode::Overflow))?;
-                    tokens_fee = tokens_fee.checked_add(calculate_fee(market.taker_fee, tokens_part)?).ok_or(error!(ErrorCode::Overflow))?;
+                    let fee_part = calculate_fee(market.taker_fee, tokens_part)?;
+                    tokens_fee = tokens_fee.checked_add(fee_part).ok_or(error!(ErrorCode::Overflow))?;
                     msg!("Atellix: Filling - {} @ {}", posted_qty.to_string(), posted_price.to_string());
                     if !inp_preview {
                         log_trade(tlog,
@@ -1647,6 +1658,7 @@ pub mod aqua_dex {
                             Side::Ask as u8,
                             posted_qty,
                             posted_price,
+                            fee_part,
                             clock_ts
                         )?;
                         map_remove(ob, DT::BidOrder, posted_node.key())?;
@@ -1660,7 +1672,8 @@ pub mod aqua_dex {
                     tokens_filled = tokens_filled.checked_add(tokens_to_fill).ok_or(error!(ErrorCode::Overflow))?;
                     let tokens_part = scale_price(tokens_to_fill, posted_price, mkt_decimal_factor)?;
                     tokens_received = tokens_received.checked_add(tokens_part).ok_or(error!(ErrorCode::Overflow))?;
-                    tokens_fee = tokens_fee.checked_add(calculate_fee(market.taker_fee, tokens_part)?).ok_or(error!(ErrorCode::Overflow))?;
+                    let fee_part = calculate_fee(market.taker_fee, tokens_part)?;
+                    tokens_fee = tokens_fee.checked_add(fee_part).ok_or(error!(ErrorCode::Overflow))?;
                     msg!("Atellix: Filling - {} @ {}", tokens_to_fill.to_string(), posted_price.to_string());
                     if !inp_preview {
                         log_trade(tlog,
@@ -1674,6 +1687,7 @@ pub mod aqua_dex {
                             Side::Ask as u8,
                             tokens_to_fill,
                             posted_price,
+                            fee_part,
                             clock_ts
                         )?;
                         let new_amount = posted_qty.checked_sub(tokens_to_fill).ok_or(error!(ErrorCode::Overflow))?;
@@ -1986,7 +2000,8 @@ pub mod aqua_dex {
                     tokens_filled = tokens_filled.checked_add(tokens_to_fill).ok_or(error!(ErrorCode::Overflow))?;
                     let tokens_part = scale_price(tokens_to_fill, posted_price, mkt_decimal_factor)?;
                     tokens_paid = tokens_paid.checked_add(tokens_part).ok_or(error!(ErrorCode::Overflow))?;
-                    tokens_fee = tokens_fee.checked_add(calculate_fee(market.taker_fee, tokens_part)?).ok_or(error!(ErrorCode::Overflow))?;
+                    let fee_part = calculate_fee(market.taker_fee, tokens_part)?;
+                    tokens_fee = tokens_fee.checked_add(fee_part).ok_or(error!(ErrorCode::Overflow))?;
                     msg!("Atellix: Filling - {} @ {}", tokens_part.to_string(), posted_price.to_string());
                     if !inp_preview {
                         log_trade(tlog,
@@ -2000,6 +2015,7 @@ pub mod aqua_dex {
                             Side::Bid as u8,
                             tokens_to_fill,
                             posted_price,
+                            fee_part,
                             clock_ts
                         )?;
                         map_remove(ob, DT::AskOrder, posted_node.key())?;
@@ -2017,7 +2033,8 @@ pub mod aqua_dex {
                     tokens_filled = tokens_filled.checked_add(posted_qty).ok_or(error!(ErrorCode::Overflow))?;
                     let tokens_part = scale_price(posted_qty, posted_price, mkt_decimal_factor)?;
                     tokens_paid = tokens_paid.checked_add(tokens_part).ok_or(error!(ErrorCode::Overflow))?;
-                    tokens_fee = tokens_fee.checked_add(calculate_fee(market.taker_fee, tokens_part)?).ok_or(error!(ErrorCode::Overflow))?;
+                    let fee_part = calculate_fee(market.taker_fee, tokens_part)?;
+                    tokens_fee = tokens_fee.checked_add(fee_part).ok_or(error!(ErrorCode::Overflow))?;
                     msg!("Atellix: Filling - {} @ {}", posted_qty.to_string(), posted_price.to_string());
                     if !inp_preview {
                         log_trade(tlog,
@@ -2031,6 +2048,7 @@ pub mod aqua_dex {
                             Side::Bid as u8,
                             posted_qty,
                             posted_price,
+                            fee_part,
                             clock_ts
                         )?;
                         map_remove(ob, DT::AskOrder, posted_node.key())?;
@@ -2046,7 +2064,8 @@ pub mod aqua_dex {
                     tokens_filled = tokens_filled.checked_add(tokens_to_fill).ok_or(error!(ErrorCode::Overflow))?;
                     let tokens_part = scale_price(tokens_to_fill, posted_price, mkt_decimal_factor)?;
                     tokens_paid = tokens_paid.checked_add(tokens_part).ok_or(error!(ErrorCode::Overflow))?;
-                    tokens_fee = tokens_fee.checked_add(calculate_fee(market.taker_fee, tokens_part)?).ok_or(error!(ErrorCode::Overflow))?;
+                    let fee_part = calculate_fee(market.taker_fee, tokens_part)?;
+                    tokens_fee = tokens_fee.checked_add(fee_part).ok_or(error!(ErrorCode::Overflow))?;
                     msg!("Atellix: Filling - {} @ {}", tokens_to_fill.to_string(), posted_price.to_string());
                     if !inp_preview {
                         log_trade(tlog,
@@ -2060,6 +2079,7 @@ pub mod aqua_dex {
                             Side::Bid as u8,
                             tokens_to_fill,
                             posted_price,
+                            fee_part,
                             clock_ts
                         )?;
                         let new_amount = posted_qty.checked_sub(tokens_to_fill).ok_or(error!(ErrorCode::Overflow))?;
@@ -2078,7 +2098,8 @@ pub mod aqua_dex {
                 if posted_part == price_to_fill {         // Match the entire order exactly
                     tokens_filled = tokens_filled.checked_add(posted_qty).ok_or(error!(ErrorCode::Overflow))?;
                     tokens_paid = tokens_paid.checked_add(posted_part).ok_or(error!(ErrorCode::Overflow))?;
-                    tokens_fee = tokens_fee.checked_add(calculate_fee(market.taker_fee, posted_part)?).ok_or(error!(ErrorCode::Overflow))?;
+                    let fee_part = calculate_fee(market.taker_fee, posted_part)?;
+                    tokens_fee = tokens_fee.checked_add(fee_part).ok_or(error!(ErrorCode::Overflow))?;
                     msg!("Atellix: Filling - {} @ {}", tokens_filled.to_string(), posted_price.to_string());
                     if !inp_preview {
                         log_trade(tlog,
@@ -2092,6 +2113,7 @@ pub mod aqua_dex {
                             Side::Bid as u8,
                             posted_qty,
                             posted_price,
+                            fee_part,
                             clock_ts
                         )?;
                         map_remove(ob, DT::AskOrder, posted_node.key())?;
@@ -2108,7 +2130,8 @@ pub mod aqua_dex {
                     price_to_fill = price_to_fill.checked_sub(posted_part).ok_or(error!(ErrorCode::Overflow))?;
                     tokens_filled = tokens_filled.checked_add(posted_qty).ok_or(error!(ErrorCode::Overflow))?;
                     tokens_paid = tokens_paid.checked_add(posted_part).ok_or(error!(ErrorCode::Overflow))?;
-                    tokens_fee = tokens_fee.checked_add(calculate_fee(market.taker_fee, posted_part)?).ok_or(error!(ErrorCode::Overflow))?;
+                    let fee_part = calculate_fee(market.taker_fee, posted_part)?;
+                    tokens_fee = tokens_fee.checked_add(fee_part).ok_or(error!(ErrorCode::Overflow))?;
                     msg!("Atellix: Filling - {} @ {}", posted_qty.to_string(), posted_price.to_string());
                     if !inp_preview {
                         log_trade(tlog,
@@ -2122,6 +2145,7 @@ pub mod aqua_dex {
                             Side::Bid as u8,
                             posted_qty,
                             posted_price,
+                            fee_part,
                             clock_ts
                         )?;
                         map_remove(ob, DT::AskOrder, posted_node.key())?;
@@ -2138,7 +2162,8 @@ pub mod aqua_dex {
                     let fill_amount = fill_quantity(price_to_fill, posted_price, mkt_decimal_factor)?;
                     tokens_filled = tokens_filled.checked_add(fill_amount).ok_or(error!(ErrorCode::Overflow))?;
                     tokens_paid = tokens_paid.checked_add(price_to_fill).ok_or(error!(ErrorCode::Overflow))?;
-                    tokens_fee = tokens_fee.checked_add(calculate_fee(market.taker_fee, price_to_fill)?).ok_or(error!(ErrorCode::Overflow))?;
+                    let fee_part = calculate_fee(market.taker_fee, price_to_fill)?;
+                    tokens_fee = tokens_fee.checked_add(fee_part).ok_or(error!(ErrorCode::Overflow))?;
                     msg!("Atellix: Filling - {} @ {}", fill_amount.to_string(), posted_price.to_string());
                     if !inp_preview {
                         log_trade(tlog,
@@ -2152,6 +2177,7 @@ pub mod aqua_dex {
                             Side::Bid as u8,
                             fill_amount,
                             posted_price,
+                            fee_part,
                             clock_ts
                         )?;
                         let new_amount = posted_qty.checked_sub(fill_amount).ok_or(error!(ErrorCode::Overflow))?;
@@ -2270,7 +2296,8 @@ pub mod aqua_dex {
         let was_filled: bool = if inp_by_quantity {
             tokens_filled == inp_quantity
         } else {
-            tokens_paid == inp_net_price
+            let net_of_fees = inp_net_price.checked_add(tokens_fee).ok_or(error!(ErrorCode::Overflow))?;
+            tokens_paid == net_of_fees
         };
 
         if !inp_preview {
@@ -2410,7 +2437,8 @@ pub mod aqua_dex {
                     tokens_filled = tokens_filled.checked_add(tokens_to_fill).ok_or(error!(ErrorCode::Overflow))?;
                     let tokens_part = scale_price(tokens_to_fill, posted_price, mkt_decimal_factor)?;
                     tokens_received = tokens_received.checked_add(tokens_part).ok_or(error!(ErrorCode::Overflow))?;
-                    tokens_fee = tokens_fee.checked_add(calculate_fee(market.taker_fee, tokens_part)?).ok_or(error!(ErrorCode::Overflow))?;
+                    let fee_part = calculate_fee(market.taker_fee, tokens_part)?;
+                    tokens_fee = tokens_fee.checked_add(fee_part).ok_or(error!(ErrorCode::Overflow))?;
                     msg!("Atellix: Filling - {} @ {}", tokens_part.to_string(), posted_price.to_string());
                     if !inp_preview {
                         log_trade(tlog,
@@ -2424,6 +2452,7 @@ pub mod aqua_dex {
                             Side::Ask as u8,
                             tokens_to_fill,
                             posted_price,
+                            fee_part,
                             clock_ts
                         )?;
                         map_remove(ob, DT::BidOrder, posted_node.key())?;
@@ -2441,7 +2470,8 @@ pub mod aqua_dex {
                     tokens_filled = tokens_filled.checked_add(posted_qty).ok_or(error!(ErrorCode::Overflow))?;
                     let tokens_part = scale_price(posted_qty, posted_price, mkt_decimal_factor)?;
                     tokens_received = tokens_received.checked_add(tokens_part).ok_or(error!(ErrorCode::Overflow))?;
-                    tokens_fee = tokens_fee.checked_add(calculate_fee(market.taker_fee, tokens_part)?).ok_or(error!(ErrorCode::Overflow))?;
+                    let fee_part = calculate_fee(market.taker_fee, tokens_part)?;
+                    tokens_fee = tokens_fee.checked_add(fee_part).ok_or(error!(ErrorCode::Overflow))?;
                     msg!("Atellix: Filling - {} @ {}", posted_qty.to_string(), posted_price.to_string());
                     if !inp_preview {
                         log_trade(tlog,
@@ -2455,6 +2485,7 @@ pub mod aqua_dex {
                             Side::Ask as u8,
                             posted_qty,
                             posted_price,
+                            fee_part,
                             clock_ts
                         )?;
                         map_remove(ob, DT::BidOrder, posted_node.key())?;
@@ -2470,7 +2501,8 @@ pub mod aqua_dex {
                     tokens_filled = tokens_filled.checked_add(tokens_to_fill).ok_or(error!(ErrorCode::Overflow))?;
                     let tokens_part = scale_price(tokens_to_fill, posted_price, mkt_decimal_factor)?;
                     tokens_received = tokens_received.checked_add(tokens_part).ok_or(error!(ErrorCode::Overflow))?;
-                    tokens_fee = tokens_fee.checked_add(calculate_fee(market.taker_fee, tokens_part)?).ok_or(error!(ErrorCode::Overflow))?;
+                    let fee_part = calculate_fee(market.taker_fee, tokens_part)?;
+                    tokens_fee = tokens_fee.checked_add(fee_part).ok_or(error!(ErrorCode::Overflow))?;
                     msg!("Atellix: Filling - {} @ {}", tokens_to_fill.to_string(), posted_price.to_string());
                     if !inp_preview {
                         log_trade(tlog,
@@ -2484,6 +2516,7 @@ pub mod aqua_dex {
                             Side::Ask as u8,
                             tokens_to_fill,
                             posted_price,
+                            fee_part,
                             clock_ts
                         )?;
                         let new_amount = posted_qty.checked_sub(tokens_to_fill).ok_or(error!(ErrorCode::Overflow))?;
@@ -2502,7 +2535,8 @@ pub mod aqua_dex {
                 if posted_part == price_to_fill {         // Match the entire order exactly
                     tokens_filled = tokens_filled.checked_add(posted_qty).ok_or(error!(ErrorCode::Overflow))?;
                     tokens_received = tokens_received.checked_add(posted_part).ok_or(error!(ErrorCode::Overflow))?;
-                    tokens_fee = tokens_fee.checked_add(calculate_fee(market.taker_fee, posted_part)?).ok_or(error!(ErrorCode::Overflow))?;
+                    let fee_part = calculate_fee(market.taker_fee, posted_part)?;
+                    tokens_fee = tokens_fee.checked_add(fee_part).ok_or(error!(ErrorCode::Overflow))?;
                     msg!("Atellix: Filling - {} @ {}", posted_qty.to_string(), posted_price.to_string());
                     if !inp_preview {
                         log_trade(tlog,
@@ -2516,6 +2550,7 @@ pub mod aqua_dex {
                             Side::Ask as u8,
                             posted_qty,
                             posted_price,
+                            fee_part,
                             clock_ts
                         )?;
                         map_remove(ob, DT::BidOrder, posted_node.key())?;
@@ -2532,7 +2567,8 @@ pub mod aqua_dex {
                     price_to_fill = price_to_fill.checked_sub(posted_part).ok_or(error!(ErrorCode::Overflow))?;
                     tokens_filled = tokens_filled.checked_add(posted_qty).ok_or(error!(ErrorCode::Overflow))?;
                     tokens_received = tokens_received.checked_add(posted_part).ok_or(error!(ErrorCode::Overflow))?;
-                    tokens_fee = tokens_fee.checked_add(calculate_fee(market.taker_fee, posted_part)?).ok_or(error!(ErrorCode::Overflow))?;
+                    let fee_part = calculate_fee(market.taker_fee, posted_part)?;
+                    tokens_fee = tokens_fee.checked_add(fee_part).ok_or(error!(ErrorCode::Overflow))?;
                     msg!("Atellix: Filling - {} @ {}", posted_qty.to_string(), posted_price.to_string());
                     if !inp_preview {
                         log_trade(tlog,
@@ -2546,6 +2582,7 @@ pub mod aqua_dex {
                             Side::Ask as u8,
                             posted_qty,
                             posted_price,
+                            fee_part,
                             clock_ts
                         )?;
                         map_remove(ob, DT::BidOrder, posted_node.key())?;
@@ -2561,7 +2598,8 @@ pub mod aqua_dex {
                     let fill_amount = fill_quantity(price_to_fill, posted_price, mkt_decimal_factor)?;
                     tokens_filled = tokens_filled.checked_add(fill_amount).ok_or(error!(ErrorCode::Overflow))?;
                     tokens_received = tokens_received.checked_add(price_to_fill).ok_or(error!(ErrorCode::Overflow))?;
-                    tokens_fee = tokens_fee.checked_add(calculate_fee(market.taker_fee, price_to_fill)?).ok_or(error!(ErrorCode::Overflow))?;
+                    let fee_part = calculate_fee(market.taker_fee, price_to_fill)?;
+                    tokens_fee = tokens_fee.checked_add(fee_part).ok_or(error!(ErrorCode::Overflow))?;
                     msg!("Atellix: Filling - {} @ {}", fill_amount.to_string(), posted_price.to_string());
                     if !inp_preview {
                         log_trade(tlog,
@@ -2575,6 +2613,7 @@ pub mod aqua_dex {
                             Side::Ask as u8,
                             fill_amount,
                             posted_price,
+                            fee_part,
                             clock_ts
                         )?;
                         let new_amount = posted_qty.checked_sub(fill_amount).ok_or(error!(ErrorCode::Overflow))?;
@@ -2699,7 +2738,8 @@ pub mod aqua_dex {
         let was_filled: bool = if inp_by_quantity {
             tokens_filled == inp_quantity
         } else {
-            tokens_received == inp_net_price
+            let net_of_fees = inp_net_price.checked_add(tokens_fee).ok_or(error!(ErrorCode::Overflow))?;
+            tokens_received == net_of_fees
         };
 
         if !inp_preview {
@@ -4358,6 +4398,7 @@ pub struct MatchEvent {
     pub maker: Pubkey,
     pub taker: Pubkey,
     pub taker_side: u8,
+    pub taker_fee: u64,
     pub amount: u64,
     pub price: u64,
     pub ts: i64,

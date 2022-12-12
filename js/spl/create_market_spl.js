@@ -76,13 +76,13 @@ async function main() {
     writeData['settle1'] = settle1.publicKey.toString()
     writeData['settle2'] = settle2.publicKey.toString()
 
-    const ordersBytes = 130 + (16384 * 7)
+    const ordersBytes = 226 + (16384 * 6)
     const ordersRent = await provider.connection.getMinimumBalanceForRentExemption(ordersBytes)
 
-    const tradeLogBytes = 130 + (16384 * 2)
+    const tradeLogBytes = 326 + (16384 * 1)
     const tradeLogRent = await provider.connection.getMinimumBalanceForRentExemption(tradeLogBytes)
 
-    const settleBytes = 130 + (16384 * 8)
+    const settleBytes = 326 + (16384 * 6)
     const settleRent = await provider.connection.getMinimumBalanceForRentExemption(settleBytes)
 
     console.log("Orders Rent: " + ordersRent)
@@ -94,6 +94,8 @@ async function main() {
 
     const marketAgent = await programAddress([marketPK.toBuffer()], aquadexPK)
     const marketAgentPK = new PublicKey(marketAgent.pubkey)
+    const marketAdmin = await programAddress([marketPK.toBuffer(), Buffer.from('admin', 'utf8')], aquadexPK)
+    const marketAdminPK = new PublicKey(marketAdmin.pubkey)
     const tokenVault1 = await associatedTokenAddress(marketAgentPK, tokenMint1)
     const tokenVault2 = await associatedTokenAddress(marketAgentPK, tokenMint2)
 
@@ -153,10 +155,13 @@ async function main() {
     var tx = new anchor.web3.Transaction()
     console.log({
         market: marketPK.toString(),
+        admin: marketAdminPK.toString(),
         state: marketState.publicKey.toString(),
         tradeLog: tradeLog.publicKey.toString(),
         agent: new PublicKey(marketAgent.pubkey).toString(),
         manager: provider.wallet.publicKey.toString(),
+        feeManager: provider.wallet.publicKey.toString(),
+        vaultManager: provider.wallet.publicKey.toString(),
         mktMint: tokenMint1.toString(),
         mktVault: new PublicKey(tokenVault1.pubkey).toString(),
         prcMint: tokenMint2.toString(),
@@ -191,10 +196,13 @@ async function main() {
         {
             accounts: {
                 market: marketPK,
+                admin: marketAdminPK,
                 state: marketState.publicKey,
                 tradeLog: tradeLog.publicKey,
                 agent: new PublicKey(marketAgent.pubkey),
                 manager: provider.wallet.publicKey,
+                feeManager: provider.wallet.publicKey,
+                vaultManager: provider.wallet.publicKey,
                 mktMint: tokenMint1,
                 mktVault: new PublicKey(tokenVault1.pubkey),
                 prcMint: tokenMint2,

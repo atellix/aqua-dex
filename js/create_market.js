@@ -173,6 +173,7 @@ async function main() {
             accounts: {
                 market: marketPK,
                 state: marketState.publicKey,
+                state: marketState.publicKey,
                 agent: new PublicKey(marketAgent.pubkey),
                 manager: provider.wallet.publicKey,
                 mktMint: tokenMint1,
