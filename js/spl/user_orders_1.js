@@ -230,7 +230,9 @@ async function main() {
     )
     await provider.sendAndConfirm(tx, [resultData1])
 
-    for (var i = 0; i < users.length; i++) {
+    var last = users.length
+    last = 20
+    for (var i = 0; i < last; i++) {
         var user = users[i]
         console.log('User: ' + (i + 1) + ' PK: ' + user.pubkey)
         var userWallet = importSecretKey(user.secret)
@@ -254,8 +256,8 @@ async function main() {
                 var res = await aquadex.account.tradeResult.fetch(resultData1.publicKey)
                 console.log(formatOrder(res))
             } else {
-                console.log('Bid')
-                console.log(await limitOrder('bid', userWallet, resultData1, qty.toFixed(0), price.toFixed(0), false))
+                console.log('Ask 2')
+                console.log(await limitOrder('ask', userWallet, resultData1, qty.toFixed(0), price.toFixed(0), false))
                 var res = await aquadex.account.tradeResult.fetch(resultData1.publicKey)
                 console.log(formatOrder(res))
             }

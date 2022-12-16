@@ -495,7 +495,6 @@ fn log_settlement(
         );*/
     }
 
-    msg!("atellix-log");
     emit!(SettleEvent {
         event_type: 33111472894808803319726137140961827977, // solana/program/aqua-dex/settle_event
         action_id: state.action_counter,
@@ -744,7 +743,6 @@ fn log_trade(
     log_entry.price = price;
     log_entry.ts = ts;
 
-    msg!("atellix-log");
     emit!(MatchEvent {
         event_type: event_type,
         action_id: action_id,
@@ -1317,7 +1315,6 @@ pub mod aqua_dex {
                         expire_order.amount().to_string(),
                         Order::price(expire_leaf.key()).to_string(),
                     );
-                    msg!("atellix-log");
                     emit!(ExpireEvent {
                         event_type: 16332991664789055110548783525139174482, // solana/program/aqua-dex/expire_event
                         action_id: state_upd.action_counter,
@@ -1460,7 +1457,6 @@ pub mod aqua_dex {
         }
 
         if !inp_preview {
-            msg!("atellix-log");
             emit!(OrderEvent {
                 event_type: 58862986463747312203336335289809479007, // solana/program/aqua-dex/limit_bid/order
                 action_id: state_upd.action_counter,
@@ -1724,7 +1720,6 @@ pub mod aqua_dex {
                 );
                 let expire_price = Order::price(expire_leaf.key());
                 let expire_total = scale_price(expire_amount, expire_price, mkt_decimal_factor)?;
-                msg!("atellix-log");
                 emit!(ExpireEvent {
                     event_type: 16332991664789055110548783525139174482, // solana/program/aqua-dex/expire_event
                     action_id: state_upd.action_counter,
@@ -1864,7 +1859,6 @@ pub mod aqua_dex {
         }
 
         if !inp_preview {
-            msg!("atellix-log");
             emit!(OrderEvent {
                 event_type: 295320270387787716737004386297471454892, // solana/program/aqua-dex/limit_ask/order
                 action_id: state_upd.action_counter,
@@ -2210,7 +2204,6 @@ pub mod aqua_dex {
                     expire_order.amount().to_string(),
                     Order::price(expire_leaf.key()).to_string(),
                 );
-                msg!("atellix-log");
                 emit!(ExpireEvent {
                     event_type: 16332991664789055110548783525139174482, // solana/program/aqua-dex/expire_event
                     action_id: state_upd.action_counter,
@@ -2301,7 +2294,6 @@ pub mod aqua_dex {
         };
 
         if !inp_preview {
-            msg!("atellix-log");
             emit!(OrderEvent {
                 event_type: 151919600483167167737000078670308605753, // solana/program/aqua-dex/market_bid/order
                 action_id: state_upd.action_counter,
@@ -2649,7 +2641,6 @@ pub mod aqua_dex {
                 );
                 let expire_price = Order::price(expire_leaf.key());
                 let expire_total = scale_price(expire_amount, expire_price, mkt_decimal_factor)?;
-                msg!("atellix-log");
                 emit!(ExpireEvent {
                     event_type: 16332991664789055110548783525139174482, // solana/program/aqua-dex/expire_event
                     action_id: state_upd.action_counter,
@@ -2743,7 +2734,6 @@ pub mod aqua_dex {
         };
 
         if !inp_preview {
-            msg!("atellix-log");
             emit!(OrderEvent {
                 event_type: 116790064293172396704069821733243480358, // solana/program/aqua-dex/market_ask/order
                 action_id: state_upd.action_counter,
@@ -2870,7 +2860,6 @@ pub mod aqua_dex {
             store_struct::<WithdrawResult>(&result, acc_result)?;
         }
 
-        msg!("atellix-log");
         emit!(CancelEvent {
             event_type: 80941766873992229586089855487021729071, // solana/program/aqua-dex/cancel_order
             action_id: state.action_counter,
@@ -2983,7 +2972,6 @@ pub mod aqua_dex {
             return Err(ErrorCode::AccountNotFound.into());
         }
 
-        msg!("atellix-log");
         emit!(WithdrawEvent {
             event_type: 206836899720010235937021599972903459637, // solana/program/aqua-dex/withdraw
             action_id: state.action_counter,
@@ -3082,7 +3070,6 @@ pub mod aqua_dex {
             map_remove(sl, order_type, leaf.key())?;
             Order::free_index(sl, order_type, leaf.slot())?;
 
-            msg!("atellix-log");
             emit!(ExpireEvent {
                 event_type: 16332991664789055110548783525139174482, // solana/program/aqua-dex/expire_event
                 action_id: state_upd.action_counter,
@@ -3193,7 +3180,6 @@ pub mod aqua_dex {
             store_struct::<WithdrawResult>(&result, acc_result)?;
         }
 
-        msg!("atellix-log");
         emit!(CancelEvent {
             event_type: 149668793492806786255339444097076784738, // solana/program/aqua-dex/manager_cancel_order
             action_id: state.action_counter,
@@ -3343,7 +3329,6 @@ pub mod aqua_dex {
             return Err(ErrorCode::AccountNotFound.into());
         }
 
-        msg!("atellix-log");
         emit!(WithdrawEvent {
             event_type: 246174444212986798995680456134066592430, // solana/program/aqua-dex/manager_withdraw
             action_id: state.action_counter,
@@ -3444,7 +3429,6 @@ pub mod aqua_dex {
                 &ctx.accounts.spl_token_prog.to_account_info(),     // SPL Token Program
             )?;
 
-            msg!("atellix-log");
             emit!(WithdrawEvent {
                 event_type: 68727559793861179499689993618056023286, // solana/program/aqua-dex/manager_withdraw/fees
                 action_id: state.action_counter,
@@ -3574,7 +3558,6 @@ pub mod aqua_dex {
         if market_tokens > 0 || pricing_tokens > 0 {
             state.action_counter = state.action_counter.checked_add(1).ok_or(error!(ErrorCode::Overflow))?;
 
-            msg!("atellix-log");
             emit!(VaultDepositEvent {
                 event_type: 116949236330450057903776475751429156227, // solana/program/aqua-dex/user_vault/deposit
                 action_id: state.action_counter,
@@ -3653,7 +3636,6 @@ pub mod aqua_dex {
             **state.to_account_info().lamports.borrow_mut() = market_lamports;
             state.log_deposit_balance = state.log_deposit_balance.checked_add(vault_lamports).ok_or(error!(ErrorCode::Overflow))?;
 
-            msg!("atellix-log");
             emit!(VaultWithdrawEvent {
                 event_type: 222531087088795477156040686028020078326, // solana/program/aqua-dex/user_vault/withdraw
                 action_id: state.action_counter,
@@ -3739,7 +3721,6 @@ pub mod aqua_dex {
             **state.to_account_info().lamports.borrow_mut() = market_lamports;
             state.log_deposit_balance = state.log_deposit_balance.checked_add(vault_lamports).ok_or(error!(ErrorCode::Overflow))?;
 
-            msg!("atellix-log");
             emit!(VaultWithdrawEvent {
                 event_type: 155648231829618734246883800498177854177, // solana/program/aqua-dex/user_vault/manager_withdraw
                 action_id: state.action_counter,

@@ -45,7 +45,7 @@ async function main() {
     }
     const mktData = JSON.parse(ndjs.toString())
     //console.log(mktData)
-    var mintPubkey = new PublicKey('USDV47taduJQSPePwGsFR9GPbYRbmRt8BCx2fRRYJEt')
+    var mintPubkey = new PublicKey('USDVXgXZcQWycX4PAu2CZbGaSG1Ft5rNjo4ARpoqw7w')
     var dataAddr = await programAddress([
         Buffer.from('metadata'),
         METAPLEX_PROGRAM_ID.toBuffer(),
