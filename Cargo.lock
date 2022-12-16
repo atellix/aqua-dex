@@ -811,7 +811,7 @@ dependencies = [
  "byte-slice-cast",
  "bytemuck",
  "num_enum",
- "slab-alloc 1.0.0",
+ "slab-alloc 1.0.1",
  "solana-program",
  "uuid",
 ]
@@ -1193,7 +1193,8 @@ dependencies = [
 
 [[package]]
 name = "slab-alloc"
-version = "1.0.0"
+version = "1.0.1"
+source = "git+https://github.com/atellix/slab-alloc?branch=net-authority#54e09b99ac5bf8aff1ca593eff17b5b0b3da592d"
 dependencies = [
  "arrayref",
  "bytemuck",

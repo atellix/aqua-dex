@@ -18,6 +18,12 @@ anchor.setProvider(provider)
 const aquadex = anchor.workspace.AquaDex
 const aquadexPK = aquadex.programId
 
+async function programAddress(inputs, program = aquadexPK) {
+    const addr = await PublicKey.findProgramAddress(inputs, program)
+    const res = { 'pubkey': await addr[0].toString(), 'nonce': addr[1] }
+    return res
+}
+
 function showData(spec) {
     var r = {}
     for (var i in spec) {
@@ -123,10 +129,6 @@ function decodeSettlementVec(pageTableEntry, pages) {
         lo.ns64('ts_updated'),
     ])
     const instPerPage = Math.floor((16384 - (headerSize + offsetSize)) / stEntry.span)
-    console.log('Page Table Entry:')
-    console.log(pageTableEntry)
-    console.log('Per Page:')
-    console.log(instPerPage)
     const stSlabVec = lo.struct([
         lo.blob(offsetSize),
         lo.u32('free_top'),
@@ -204,14 +206,15 @@ function decodeSettlementLog(data) {
     var res = stSlabAlloc.decode(data)
     var header = res['header']
     var marketPK = header[0]['market'].toJSON().data
-    var prevPK = header[0]['prev'].toJSON().data
-    var nextPK = header[0]['next'].toJSON().data
-    console.log({
+    var prevPK = new PublicKey(header[0]['prev'].toJSON().data)
+    var nextPK = new PublicKey(header[0]['next'].toJSON().data)
+    
+    /*console.log({
         'market': (new PublicKey(marketPK)).toString(),
         'prev': (new PublicKey(prevPK)).toString(),
         'next': (new PublicKey(nextPK)).toString(),
         'items': header[0]['items'],
-    })
+    })*/
     //console.log(JSON.stringify(res['header'], null, 4))
     //console.log(JSON.stringify(res['type_page']))
     var settleMap = res['type_page'][0]
@@ -233,7 +236,12 @@ function decodeSettlementLog(data) {
             settlementEntries.push(entryItem)
         }
     }
-    console.log(settlementEntries)
+    return {
+        'prev': prevPK,
+        'next': nextPK,
+        'entries': settlementEntries,
+    }
+    //console.log(settlementEntries)
 
     /*console.log('Settlement Vec:')
     console.log(vecData)
@@ -251,10 +259,45 @@ async function main() {
     }
     const mktData = JSON.parse(ndjs.toString())
     const marketPK = new PublicKey(mktData.market)
+    const marketStatePK = new PublicKey(mktData.marketState)
     const marketSpec = await aquadex.account.market.fetch(marketPK)
     const settle0 = await provider.connection.getAccountInfo(marketSpec.settle0)
     //console.log(settle0.data)
-    decodeSettlementLog(settle0.data)
+    const logs = decodeSettlementLog(settle0.data)
+    const wallet = provider.wallet.publicKey.toString()
+    for (const l of logs.entries) {
+        if (l.owner === wallet) {
+            console.log(l)
+            const vaultOwnerPK = new PublicKey(l.owner)
+            const vault = await programAddress([marketPK.toBuffer(), vaultOwnerPK.toBuffer()], aquadexPK)
+            const admin = await programAddress([marketPK.toBuffer(), Buffer.from('admin', 'utf8')], aquadexPK)
+            var prevPK = logs.prev
+            var nextPK = logs.next
+            if (prevPK.toString() === '11111111111111111111111111111111') {
+                prevPK = marketSpec.settle0
+            }
+            if (nextPK.toString() === '11111111111111111111111111111111') {
+                nextPK = marketSpec.settle0
+            }
+            console.log('Vault Deposit')
+            console.log(await aquadex.rpc.vaultDeposit(
+                {
+                    accounts: {
+                        market: marketPK,
+                        state: marketStatePK,
+                        admin: new PublicKey(admin.pubkey),
+                        manager: provider.wallet.publicKey,
+                        owner: new PublicKey(l.owner),
+                        settle: marketSpec.settle0,
+                        settlePrev: prevPK,
+                        settleNext: nextPK,
+                        vault: new PublicKey(vault.pubkey),
+                        systemProgram: SystemProgram.programId,
+                    },
+                },
+            ))
+        }
+    }
     //decodeOrderBook(orderBook.data)
 }
 
