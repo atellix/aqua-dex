@@ -3703,8 +3703,8 @@ pub struct CreateMarket<'info> {
     /// CHECK: ok
     #[account(seeds = [market.key().as_ref()], bump = inp_agent_nonce)]
     pub agent: AccountInfo<'info>,
-    #[account(mut)]
-    pub manager: Signer<'info>,
+    #[account(mut, signer)]
+    pub manager: AccountInfo<'info>,
     /// CHECK: ok
     pub mkt_mint: AccountInfo<'info>,
     /// CHECK: ok

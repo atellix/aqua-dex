@@ -207,7 +207,7 @@ dependencies = [
  "bytemuck",
  "num_enum",
  "security-token",
- "slab-alloc 1.0.0 (git+https://github.com/atellix/slab-alloc?branch=aqua-dex)",
+ "slab-alloc 1.0.4",
  "solana-program",
 ]
 
@@ -1206,8 +1206,8 @@ dependencies = [
 
 [[package]]
 name = "slab-alloc"
-version = "1.0.0"
-source = "git+https://github.com/atellix/slab-alloc?branch=aqua-dex#ca2bfd0883ce8d4c9fe3f342bbe392774c83e948"
+version = "1.0.4"
+source = "git+https://github.com/atellix/slab-alloc?branch=aqua-dex#3bb10605afde4a3f37a832b0a18dca5cf8f1ada5"
 dependencies = [
  "arrayref",
  "bytemuck",
