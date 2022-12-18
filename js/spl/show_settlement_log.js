@@ -123,10 +123,10 @@ function decodeSettlementVec(pageTableEntry, pages) {
         lo.ns64('ts_updated'),
     ])
     const instPerPage = Math.floor((16384 - (headerSize + offsetSize)) / stEntry.span)
-    console.log('Page Table Entry:')
+    /*console.log('Page Table Entry:')
     console.log(pageTableEntry)
     console.log('Per Page:')
-    console.log(instPerPage)
+    console.log(instPerPage)*/
     const stSlabVec = lo.struct([
         lo.blob(offsetSize),
         lo.u32('free_top'),
@@ -206,12 +206,12 @@ function decodeSettlementLog(data) {
     var marketPK = header[0]['market'].toJSON().data
     var prevPK = header[0]['prev'].toJSON().data
     var nextPK = header[0]['next'].toJSON().data
-    console.log({
+    /*console.log({
         'market': (new PublicKey(marketPK)).toString(),
         'prev': (new PublicKey(prevPK)).toString(),
         'next': (new PublicKey(nextPK)).toString(),
         'items': header[0]['items'],
-    })
+    })*/
     //console.log(JSON.stringify(res['header'], null, 4))
     //console.log(JSON.stringify(res['type_page']))
     var settleMap = res['type_page'][0]
@@ -233,12 +233,13 @@ function decodeSettlementLog(data) {
             settlementEntries.push(entryItem)
         }
     }
-    console.log(settlementEntries)
+    //console.log(settlementEntries)
 
     /*console.log('Settlement Vec:')
     console.log(vecData)
     console.log('Settlement Map:')
     console.log(mapData)*/
+    return settlementEntries
 }
 
 async function main() {
@@ -254,11 +255,11 @@ async function main() {
     const marketSpec = await aquadex.account.market.fetch(marketPK)
     const settle0 = await provider.connection.getAccountInfo(marketSpec.settle0)
     //console.log(settle0.data)
-    decodeSettlementLog(settle0.data)
+    const entries = decodeSettlementLog(settle0.data)
     //decodeOrderBook(orderBook.data)
+    console.log('Entries: ' + entries.length)
 }
 
-console.log('Begin')
-main().then(() => console.log('Success')).catch(error => {
+main().then(() => process.exit(0)).catch(error => {
     console.log(error)
 })

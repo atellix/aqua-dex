@@ -39,7 +39,7 @@ function importSecretKey(keyStr) {
 async function main() {
     var mjs
     try {
-        mjs = await fs.readFile('market_wsol_usdc_1.json')
+        mjs = await fs.readFile('market_wsol_usdc_3.json')
     } catch (error) {
         console.error('File Error: ', error)
     }
@@ -60,22 +60,28 @@ async function main() {
         userWallet = importSecretKey(user.secret)
 
         // Airdrop SOL
-        /*var airdropSig = await provider.connection.requestAirdrop(userWallet.publicKey, anchor.web3.LAMPORTS_PER_SOL * 2)
-        var airdropConfirm = await provider.connection.confirmTransaction(airdropSig)
-        console.log('User: ' + (i + 1) + ' PK: ' + user.pubkey + ' Airdrop Complete')
-        console.log(airdropSig)*/
+        if (false) {
+            var res = await exec('solana airdrop 2 ' + userWallet.publicKey.toString())
+            console.log(res.stdout)
+            /*var airdropSig = await provider.connection.requestAirdrop(userWallet.publicKey, anchor.web3.LAMPORTS_PER_SOL * 2)
+            var airdropConfirm = await provider.connection.confirmTransaction(airdropSig)
+            console.log('User: ' + (i + 1) + ' PK: ' + user.pubkey + ' Airdrop Complete')
+            console.log(airdropSig)*/
+        }
 
         // Send SOL for running TXs
-        tx = new Transaction()
-        tx.add(SystemProgram.transfer({
-            fromPubkey: provider.wallet.publicKey, 
-            lamports: anchor.web3.LAMPORTS_PER_SOL * 2,
-            toPubkey: userWallet.publicKey,
-        }))
-        try {
-            console.log('Transfer SOL: ' + await provider.sendAndConfirm(tx))
-        } catch (error) {
-            console.log('Transfer SOL: Error: ' + error)
+        if (false) {
+            tx = new Transaction()
+            tx.add(SystemProgram.transfer({
+                fromPubkey: provider.wallet.publicKey, 
+                lamports: anchor.web3.LAMPORTS_PER_SOL * 1,
+                toPubkey: userWallet.publicKey,
+            }))
+            try {
+                console.log('Transfer SOL: ' + await provider.sendAndConfirm(tx))
+            } catch (error) {
+                console.log('Transfer SOL: Error: ' + error)
+            }
         }
 
         // Create associated tokens
@@ -92,39 +98,60 @@ async function main() {
             console.log('Create User Token 2: Error: ' + error)
         }
 
-        tx2 = new Transaction()
-        tx2.add(SystemProgram.transfer({
-            fromPubkey: provider.wallet.publicKey, 
-            lamports: anchor.web3.LAMPORTS_PER_SOL * 3,
-            toPubkey: userToken1.address,
-        }))
-        tx2.add(createSyncNativeInstruction(userToken1.address))
-        try {
-            console.log('Transfer/Wrap SOL: ' + await provider.sendAndConfirm(tx2))
-        } catch (error) {
-            console.log('Transfer/Wrap SOL: Error: ' + error)
+        if (false) {
+            tx2 = new Transaction()
+            tx2.add(SystemProgram.transfer({
+                fromPubkey: provider.wallet.publicKey, 
+                lamports: anchor.web3.LAMPORTS_PER_SOL * 3,
+                toPubkey: userToken1.address,
+            }))
+            tx2.add(createSyncNativeInstruction(userToken1.address))
+            try {
+                console.log('Transfer/Wrap SOL: ' + await provider.sendAndConfirm(tx2))
+            } catch (error) {
+                console.log('Transfer/Wrap SOL: Error: ' + error)
+            }
         }
 
-        var ascToken2 = await associatedTokenAddress(userWallet.publicKey, tokenMint2)
-        var srcToken2 = await associatedTokenAddress(provider.wallet.publicKey, tokenMint2)
-        try {
-            console.log('Transfer USDC: ' + await transfer(
-                provider.connection,
-                provider.wallet.payer,
-                new PublicKey(srcToken2.pubkey),
-                new PublicKey(ascToken2.pubkey),
-                provider.wallet.payer,
-                500 * (10**6),
-            ))
-        } catch (error) {
-            console.log('Transfer USDC: Error: ' + error)
+        if (true) {
+            var ascToken1 = await associatedTokenAddress(userWallet.publicKey, tokenMint1)
+            var srcToken1 = await associatedTokenAddress(provider.wallet.publicKey, tokenMint1)
+            try {
+                console.log('Transfer Token A: ' + await transfer(
+                    provider.connection,
+                    provider.wallet.payer,
+                    new PublicKey(srcToken1.pubkey),
+                    new PublicKey(ascToken1.pubkey),
+                    provider.wallet.payer,
+                    1000000 * (10**6),
+                ))
+            } catch (error) {
+                console.log('Transfer Token A: Error: ' + error)
+            }
+        }
+
+        if (true) {
+            var ascToken2 = await associatedTokenAddress(userWallet.publicKey, tokenMint2)
+            var srcToken2 = await associatedTokenAddress(provider.wallet.publicKey, tokenMint2)
+            try {
+                console.log('Transfer Token B: ' + await transfer(
+                    provider.connection,
+                    provider.wallet.payer,
+                    new PublicKey(srcToken2.pubkey),
+                    new PublicKey(ascToken2.pubkey),
+                    provider.wallet.payer,
+                    1000000 * (10**6),
+                ))
+            } catch (error) {
+                console.log('Transfer Token B: Error: ' + error)
+            }
         }
 
         //console.log("Asc Token 1: " + userToken1.address.toString())
         //console.log("Asc Token 2: " + userToken2.address.toString())
         console.log('User: ' + (i + 1) + ' PK: ' + user.pubkey)
 
-        await timer(2000)
+        await timer(1000)
     }
 }
 

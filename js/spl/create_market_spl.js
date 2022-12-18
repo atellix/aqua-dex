@@ -49,10 +49,10 @@ async function createTokenMint() {
 }
 
 async function main() {
-    //var mint1 = await createTokenMint()
-    //var mint2 = await createTokenMint()
-    var mint1 = 'So11111111111111111111111111111111111111112'
-    var mint2 = 'USDVXgXZcQWycX4PAu2CZbGaSG1Ft5rNjo4ARpoqw7w'
+    var mint1 = await createTokenMint()
+    var mint2 = await createTokenMint()
+    //var mint1 = 'So11111111111111111111111111111111111111112'
+    //var mint2 = 'USDVXgXZcQWycX4PAu2CZbGaSG1Ft5rNjo4ARpoqw7w'
     console.log("Mints: " + mint1 + " " + mint2)
     const tokenMint1 = new PublicKey(mint1)
     const tokenMint2 = new PublicKey(mint2)
@@ -178,8 +178,8 @@ async function main() {
         marketAgent.nonce,
         tokenVault1.nonce,
         tokenVault2.nonce,
-        9,
-        4,
+        6,
+        6,
         0,                                      // Mkt Mint Type - 0: SPL, 1: AST
         0,                                      // Prc Mint Type 
         false,                                  // Manager withdrawals (FALSE for trustless mode)
@@ -187,7 +187,7 @@ async function main() {
         true,                                   // Expire enable
         new anchor.BN(1),                       // Min expire
         new anchor.BN(0),                       // Min quantity
-        new anchor.BN(0),                       // Taker fee (X / 10,000,000)
+        new anchor.BN(4000),                    // Taker fee (X / 10,000,000; or 1,000 = 1 BPS)
         new anchor.BN(0),                       // Log fee (reserve space in settlement log)
         new anchor.BN(0),                       // Log rebate (when closing settled position)
         new anchor.BN(0),                       // Log reimburse (for creating new settlement log accounts)
@@ -222,7 +222,7 @@ async function main() {
     console.log(await provider.sendAndConfirm(tx))
 
     try {
-        await fs.writeFile('market_wsol_usdc_2.json', JSON.stringify(writeData, null, 4))
+        await fs.writeFile('market_3.json', JSON.stringify(writeData, null, 4))
     } catch (error) {
         console.log("File Error: " + error)
     }

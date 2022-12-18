@@ -3,6 +3,7 @@ use std::{ io::Cursor, string::String, result::Result as FnResult, mem::size_of,
 use bytemuck::{ Pod, Zeroable, cast_slice_mut, cast_slice };
 use num_enum::{ TryFromPrimitive, IntoPrimitive };
 use arrayref::{ mut_array_refs, array_refs };
+use byte_slice_cast::{ AsByteSlice };
 use anchor_lang::prelude::*;
 use anchor_spl::token::{ self, Token, Transfer as SPL_Transfer, TokenAccount as SPL_TokenAccount };
 use anchor_spl::associated_token::{ self, AssociatedToken };
@@ -17,7 +18,7 @@ extern crate slab_alloc;
 use slab_alloc::{ SlabPageAlloc, CritMapHeader, CritMap, AnyNode, LeafNode, SlabVec, SlabTreeError };
 
 extern crate security_token;
-use security_token::{ cpi::accounts::{ Transfer as AST_Transfer, CreateAccount as AST_CreateAccount } };
+use security_token::{ SecurityTokenAccount as AST_TokenAccount, cpi::accounts::{ Transfer as AST_Transfer, CreateAccount as AST_CreateAccount } };
 
 declare_id!("AQUAvuZCFUGtSc8uQBaTXfJz3YjMUbinMeXDoDQmZLvX");
 
@@ -31,6 +32,7 @@ pub const MAX_TRADES: u32 = 100;        // Max trade entries in the trade log
 pub const MAX_ACCOUNTS: u32 = 1000;     // Max number of accounts per settlement data file
 pub const MAX_EVICTIONS: u32 = 10;      // Max number of orders to evict before aborting
 pub const MAX_EXPIRATIONS: u32 = 10;    // Max number of expired orders to remove before proceeding with current order
+pub const MAX_RBAC: u32 = 100;          // Max number of RBAC entries
 
 #[repr(u8)]
 #[derive(PartialEq, Debug, Eq, Copy, Clone, TryFromPrimitive, IntoPrimitive)]
@@ -55,6 +57,59 @@ pub enum DT { // All data types
     AskOrder,
     AccountMap,
     Account,
+    UserRBACMap,                 // CritMap
+    UserRBAC,                    // Slabvec
+}
+
+#[repr(u32)]
+#[derive(PartialEq, Debug, Eq, Copy, Clone, TryFromPrimitive)]
+pub enum Role {             // Role-based access control:
+    NetworkAdmin,           // 0 - Can manage RBAC for other users
+    FeeManager,             // 1 - This signer can withdraw fees
+}
+
+#[derive(Copy, Clone)]
+#[repr(packed)]
+pub struct UserRBAC {
+    pub role: Role,
+    pub free: u32,
+}
+unsafe impl Zeroable for UserRBAC {}
+unsafe impl Pod for UserRBAC {}
+
+impl UserRBAC {
+    pub fn role(&self) -> Role {
+        self.role
+    }
+
+    pub fn free(&self) -> u32 {
+        self.free
+    }
+
+    pub fn set_free(&mut self, new_free: u32) {
+        self.free = new_free
+    }
+
+    fn next_index(pt: &mut SlabPageAlloc, data_type: DT) -> FnResult<u32, ProgramError> {
+        let svec = pt.header_mut::<SlabVec>(index_datatype(data_type));
+        let free_top = svec.free_top();
+        if free_top == 0 { // Empty free list
+            return Ok(svec.next_index());
+        }
+        let free_index = free_top.checked_sub(1).ok_or(error!(ErrorCode::Overflow))?;
+        let index_act = pt.index::<UserRBAC>(index_datatype(data_type), free_index as usize);
+        let index_ptr = index_act.free();
+        pt.header_mut::<SlabVec>(index_datatype(data_type)).set_free_top(index_ptr);
+        Ok(free_index)
+    }
+
+    fn free_index(pt: &mut SlabPageAlloc, data_type: DT, idx: u32) -> anchor_lang::Result<()> {
+        let free_top = pt.header::<SlabVec>(index_datatype(data_type)).free_top();
+        pt.index_mut::<UserRBAC>(index_datatype(data_type), idx as usize).set_free(free_top);
+        let new_top = idx.checked_add(1).ok_or(error!(ErrorCode::Overflow))?;
+        pt.header_mut::<SlabVec>(index_datatype(data_type)).set_free_top(new_top);
+        Ok(())
+    }
 }
 
 #[repr(u16)]
@@ -364,6 +419,26 @@ fn fill_quantity(input_price: u64, order_price: u64, decimal_factor: u64) -> anc
     return Ok(tokens);
 }
 
+fn has_role(acc_auth: &AccountInfo, role: Role, key: &Pubkey) -> anchor_lang::Result<()> {
+    let auth_data: &mut [u8] = &mut acc_auth.try_borrow_mut_data()?;
+    let rd = SlabPageAlloc::new(auth_data);
+    let authhash: u128 = CritMap::bytes_hash([[role as u32].as_byte_slice(), key.as_ref()].concat().as_slice());
+    let authrec = map_get(rd, DT::UserRBAC, authhash);
+    if ! authrec.is_some() {
+        return Err(ErrorCode::AccessDenied.into());
+    }
+    if authrec.unwrap().owner() != *key {
+        msg!("User key does not match signer");
+        return Err(ErrorCode::AccessDenied.into());
+    }
+    let urec = rd.index::<UserRBAC>(DT::UserRBAC as u16, authrec.unwrap().slot() as usize);
+    if urec.role() != role {
+        msg!("Role does not match");
+        return Err(ErrorCode::AccessDenied.into());
+    }
+    Ok(())
+}
+
 #[inline]
 fn calculate_fee(fee_rate: u32, base_amount: u64) -> anchor_lang::Result<u64> {
     let mut fee: u128 = (base_amount as u128).checked_mul(fee_rate as u128).ok_or(error!(ErrorCode::Overflow))?;
@@ -608,7 +683,6 @@ fn log_close<'info>(
 fn valid_order(order_type: OrderDT, leaf: &LeafNode, user_key: &Pubkey, sl: &SlabPageAlloc, expired_orders: &mut Vec<u128>, clock_ts: i64) -> bool {
     let order = sl.index::<Order>(order_type as u16, leaf.slot() as usize);
     let valid_expiry: bool = order.expiry == 0 || order.expiry < clock_ts;      // Check expiry timestamp if needed
-    // TODO: Update before release
     let valid_user: bool = leaf.owner() != *user_key;                           // Prevent trades between the same user
     let valid = valid_expiry && valid_user;
     /*msg!("Atellix: Found {} [{}] {} @ {} Exp: {} Key: {} OK: {}",
@@ -655,7 +729,15 @@ fn perform_transfer<'info>(
         }
     } else if mint_type == MintType::AtxSecurityToken {
         if preview {
-            
+            let token_acct_info = &accounts.get(ast_offset + 1).unwrap().to_account_info();
+            let token_acct = load_struct::<AST_TokenAccount>(token_acct_info)?;
+            if token_acct.frozen {
+                return Err(ErrorCode::ExternalError.into());
+            }
+            if token_acct.amount < amount {
+                return Err(ErrorCode::InsufficientTokens.into());
+            }
+            return Ok(());
         } else {
             let ast_prog = accounts.get(ast_offset).unwrap().to_account_info();
             require!(*ast_prog.key == security_token::ID, ErrorCode::InvalidParameters);
@@ -765,6 +847,21 @@ fn log_trade(
 pub mod aqua_dex {
     use super::*;
 
+    pub fn initialize(ctx: Context<Initialize>) -> anchor_lang::Result<()> {
+        let rt = &mut ctx.accounts.root_data;
+        rt.root_authority = ctx.accounts.auth_data.key();
+
+        let auth_data: &mut[u8] = &mut ctx.accounts.auth_data.try_borrow_mut_data()?;
+        let rd = SlabPageAlloc::new(auth_data);
+        rd.setup_page_table();
+        rd.allocate::<CritMapHeader, AnyNode>(DT::UserRBACMap as u16, MAX_RBAC as usize).expect("Failed to allocate");
+        rd.allocate::<SlabVec, UserRBAC>(DT::UserRBAC as u16, MAX_RBAC as usize).expect("Failed to allocate");
+
+        msg!("Atellix: Initialized AquaDEX Program");
+
+        Ok(())
+    }
+
     pub fn store_metadata(ctx: Context<UpdateMetadata>,
         inp_program_name: String,
         inp_developer_name: String,
@@ -789,6 +886,110 @@ pub mod aqua_dex {
         msg!("Developer URL: {}", md.developer_url.as_str());
         msg!("Source URL: {}", md.source_url.as_str());
         msg!("Verify URL: {}", md.verify_url.as_str());
+        Ok(())
+    }
+
+    pub fn grant(ctx: Context<UpdateRBAC>,
+        _inp_root_nonce: u8,
+        inp_role: u32,
+    ) -> anchor_lang::Result<()> {
+        let acc_rbac = &ctx.accounts.rbac_user.to_account_info();
+        let acc_admn = &ctx.accounts.program_admin.to_account_info();
+        let acc_auth = &ctx.accounts.auth_data.to_account_info();
+
+        // Check for NetworkAdmin authority
+        let admin_role = has_role(&acc_auth, Role::NetworkAdmin, acc_admn.key);
+        let mut program_owner: bool = false;
+        if admin_role.is_err() {
+            let acc_pdat = &ctx.accounts.program_data;
+            verify_matching_accounts(&acc_pdat.upgrade_authority_address.unwrap(), acc_admn.key, Some(String::from("Invalid program owner")))?;
+            program_owner = true;
+        }
+
+        // Verify specified role
+        let role_item = Role::try_from_primitive(inp_role);
+        if role_item.is_err() {
+            msg!("Invalid role: {}", inp_role.to_string());
+            return Err(ErrorCode::InvalidParameters.into());
+        }
+        let role = role_item.unwrap();
+        if role == Role::NetworkAdmin && ! program_owner {
+            msg!("Reserved for program owner");
+            return Err(ErrorCode::AccessDenied.into());
+        }
+
+        // Verify not assigning roles to self
+        if *acc_admn.key == *acc_rbac.key {
+            msg!("Cannot grant roles to self");
+            return Err(ErrorCode::AccessDenied.into());
+        }
+
+        let auth_data: &mut[u8] = &mut acc_auth.try_borrow_mut_data()?;
+        let rd = SlabPageAlloc::new(auth_data);
+        let authhash: u128 = CritMap::bytes_hash([[role as u32].as_byte_slice(), acc_rbac.key.as_ref()].concat().as_slice());
+
+        // Check if record exists
+        let authrec = map_get(rd, DT::UserRBAC, authhash);
+        if authrec.is_some() {
+            msg!("Role already active");
+        } else {
+            // Add new record
+            let new_item = map_insert(rd, DT::UserRBAC, &LeafNode::new(authhash, 0, acc_rbac.key));
+            if new_item.is_err() {
+                msg!("Unable to insert role");
+                return Err(ErrorCode::InternalError.into());
+            }
+            let rbac_idx = UserRBAC::next_index(rd, DT::UserRBAC)?;
+            let mut cm = CritMap { slab: rd, type_id: map_datatype(DT::UserRBAC), capacity: map_len(DT::UserRBAC) };
+            cm.get_key_mut(authhash).unwrap().set_slot(rbac_idx);
+            *rd.index_mut(DT::UserRBAC as u16, rbac_idx as usize) = UserRBAC { role: role, free: 0 };
+            msg!("Atellix: Role granted");
+        }
+        Ok(())
+    }
+
+    pub fn revoke(ctx: Context<UpdateRBAC>,
+        _inp_root_nonce: u8,
+        inp_role: u32,
+    ) -> anchor_lang::Result<()> {
+        let acc_admn = &ctx.accounts.program_admin.to_account_info(); // Program owner or network admin
+        let acc_auth = &ctx.accounts.auth_data.to_account_info();
+        let acc_rbac = &ctx.accounts.rbac_user.to_account_info();
+
+        // Check for NetworkAdmin authority
+        let admin_role = has_role(&acc_auth, Role::NetworkAdmin, acc_admn.key);
+        let mut program_owner: bool = false;
+        if admin_role.is_err() {
+            let acc_pdat = &ctx.accounts.program_data;
+            verify_matching_accounts(&acc_pdat.upgrade_authority_address.unwrap(), acc_admn.key, Some(String::from("Invalid program owner")))?;
+            program_owner = true;
+        }
+
+        // Verify specified role
+        let role_item = Role::try_from_primitive(inp_role);
+        if role_item.is_err() {
+            msg!("Invalid role: {}", inp_role.to_string());
+            return Err(ErrorCode::InvalidParameters.into());
+        }
+        let role = role_item.unwrap();
+        if role == Role::NetworkAdmin && ! program_owner {
+            msg!("Reserved for program owner");
+            return Err(ErrorCode::AccessDenied.into());
+        }
+
+        let auth_data: &mut[u8] = &mut acc_auth.try_borrow_mut_data()?;
+        let rd = SlabPageAlloc::new(auth_data);
+        let authhash: u128 = CritMap::bytes_hash([[role as u32].as_byte_slice(), acc_rbac.key.as_ref()].concat().as_slice());
+
+        // Check if record exists
+        let authrec = map_get(rd, DT::UserRBAC, authhash);
+        if authrec.is_some() {
+            map_remove(rd, DT::UserRBAC, authhash).or(Err(error!(ErrorCode::InternalError)))?;
+            UserRBAC::free_index(rd, DT::UserRBAC, authrec.unwrap().slot())?;
+            msg!("Atellix: Role revoked");
+        } else {
+            msg!("Atellix: Role not found");
+        }
         Ok(())
     }
 
@@ -3402,6 +3603,7 @@ pub mod aqua_dex {
         let market = &ctx.accounts.market;
         let admin = &ctx.accounts.admin;
         let state = &mut ctx.accounts.state;
+        let acc_auth = &ctx.accounts.auth_data.to_account_info();
         let acc_agent = &ctx.accounts.agent.to_account_info();
         let acc_manager = &ctx.accounts.manager.to_account_info();
         let acc_prc_vault = &ctx.accounts.prc_vault.to_account_info();
@@ -3413,6 +3615,8 @@ pub mod aqua_dex {
         verify_matching_accounts(&market.state, &state.key(), Some(String::from("Invalid market state")))?;
         verify_matching_accounts(&market.agent, &acc_agent.key, Some(String::from("Invalid market agent")))?;
         verify_matching_accounts(&market.prc_vault, &acc_prc_vault.key, Some(String::from("Invalid pricing token vault")))?;
+
+        has_role(&acc_auth, Role::FeeManager, acc_manager.key)?;
 
         let fee_tokens = state.prc_fees_balance;
         if fee_tokens > 0 {
@@ -3766,6 +3970,22 @@ pub mod aqua_dex {
 }
 
 #[derive(Accounts)]
+pub struct Initialize<'info> {
+    #[account(init, seeds = [program_id.as_ref()], bump, payer = program_admin, space = 40)]
+    pub root_data: Account<'info, RootData>,
+    /// CHECK: ok
+    #[account(zero)]
+    pub auth_data: UncheckedAccount<'info>,
+    #[account(constraint = program.programdata_address().unwrap() == Some(program_data.key()))]
+    pub program: Program<'info, AquaDex>,
+    #[account(constraint = program_data.upgrade_authority_address == Some(program_admin.key()))]
+    pub program_data: Account<'info, ProgramData>,
+    #[account(mut)]
+    pub program_admin: Signer<'info>,
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
 pub struct UpdateMetadata<'info> {
     #[account(constraint = program.programdata_address().unwrap() == Some(program_data.key()))]
     pub program: Program<'info, AquaDex>,
@@ -3776,6 +3996,23 @@ pub struct UpdateMetadata<'info> {
     #[account(init_if_needed, seeds = [program_id.as_ref(), b"metadata"], bump, payer = program_admin, space = 584)]
     pub program_info: Account<'info, ProgramMetadata>,
     pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+#[instruction(_inp_root_nonce: u8)]
+pub struct UpdateRBAC<'info> {
+    #[account(seeds = [program_id.as_ref()], bump = _inp_root_nonce)]
+    pub root_data: Account<'info, RootData>,
+    /// CHECK: ok
+    #[account(mut, constraint = root_data.root_authority == auth_data.key())]
+    pub auth_data: UncheckedAccount<'info>,
+    #[account(constraint = program.programdata_address().unwrap() == Some(program_data.key()))]
+    pub program: Program<'info, AquaDex>,
+    pub program_data: Account<'info, ProgramData>,
+    #[account(mut)]
+    pub program_admin: Signer<'info>,
+    /// CHECK: ok
+    pub rbac_user: AccountInfo<'info>,
 }
 
 #[derive(Accounts)]
@@ -4112,6 +4349,11 @@ pub struct ManagerTransferSol<'info> {
 
 #[derive(Accounts)]
 pub struct ManagerWithdrawFees<'info> {
+    #[account(seeds = [program_id.as_ref()], bump)]
+    pub root_data: Account<'info, RootData>,
+    /// CHECK: ok
+    #[account(constraint = root_data.root_authority == auth_data.key())]
+    pub auth_data: UncheckedAccount<'info>,
     pub market: Account<'info, Market>,
     #[account(mut)]
     pub state: Account<'info, MarketState>,
@@ -4366,6 +4608,30 @@ pub struct LogStatusResult {
     pub prev: Pubkey,
     pub next: Pubkey,
     pub items: u32,
+}
+
+#[account]
+pub struct RootData {
+    pub root_authority: Pubkey,
+}
+// Size: 8 + 32 = 40
+
+impl RootData {
+    pub fn root_authority(&self) -> Pubkey {
+        self.root_authority
+    }
+
+    pub fn set_root_authority(&mut self, new_authority: Pubkey) {
+        self.root_authority = new_authority
+    }
+}
+
+impl Default for RootData {
+    fn default() -> Self {
+        Self {
+            root_authority: Pubkey::default(),
+        }
+    }
 }
 
 #[event]

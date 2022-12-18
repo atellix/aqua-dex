@@ -107,6 +107,8 @@ function formatWithdraw(order) {
     return res
 }
 
+const timer = ms => new Promise(res => setTimeout(res, ms))
+
 async function readMarketSpec() {
     var mjs
     try {
@@ -230,44 +232,49 @@ async function main() {
     )
     await provider.sendAndConfirm(tx, [resultData1])
 
-    var last = users.length
-    last = 20
-    for (var i = 0; i < last; i++) {
-        var user = users[i]
-        console.log('User: ' + (i + 1) + ' PK: ' + user.pubkey)
-        var userWallet = importSecretKey(user.secret)
-        var userToken1 = await associatedTokenAddress(userWallet.publicKey, tokenMint1)
-        var userToken2 = await associatedTokenAddress(userWallet.publicKey, tokenMint2)
-        //console.log(await limitOrder('bid', userWallet, resultData1, 1 * (10**9), 15 * (10**6) false))
-        //console.log(await limitOrder('ask', userWallet, resultData1, 1 * (10**9), 7 * (10**6), true))
-        //var res = await aquadex.account.tradeResult.fetch(resultData1.publicKey)
-        //console.log(formatOrder(res))
+    for (var k = 0; k < 100; k++) {
+        var last = users.length
+        last = 20
+        for (var i = 0; i < last; i++) {
+            var user = users[i]
+            //console.log('User: ' + (i + 1) + ' PK: ' + user.pubkey)
+            var userWallet = importSecretKey(user.secret)
+            var userToken1 = await associatedTokenAddress(userWallet.publicKey, tokenMint1)
+            var userToken2 = await associatedTokenAddress(userWallet.publicKey, tokenMint2)
+            //console.log(await limitOrder('bid', userWallet, resultData1, 1 * (10**9), 15 * (10**6) false))
+            //console.log(await limitOrder('ask', userWallet, resultData1, 1 * (10**9), 7 * (10**6), true))
+            //var res = await aquadex.account.tradeResult.fetch(resultData1.publicKey)
+            //console.log(formatOrder(res))
 
-        var rnd1 = new Number(Math.random()).toFixed(4)
-        var rnd2 = new Number(Math.random() * 8).toFixed(1)
-        //console.log('Random Adjustments: ' + rnd1 + ', ' + rnd2)
-        var qty = (new Number(rnd1) + 1) * (10**9)
-        var price = (10 - new Number(rnd2)) * (10**6)
-        console.log('Qty: ' + qty + ' Price: ' + price)
-        try {
-            if ((i % 2) == 0) {
-                console.log('Ask')
-                console.log(await limitOrder('ask', userWallet, resultData1, qty.toFixed(0), price.toFixed(0), false))
-                var res = await aquadex.account.tradeResult.fetch(resultData1.publicKey)
-                console.log(formatOrder(res))
-            } else {
-                console.log('Bid')
-                console.log(await limitOrder('bid', userWallet, resultData1, qty.toFixed(0), price.toFixed(0), false))
-                var res = await aquadex.account.tradeResult.fetch(resultData1.publicKey)
-                console.log(formatOrder(res))
+            var rnd1 = new Number(Math.random()).toFixed(4)
+            var rnd2 = new Number(Math.random() * 8).toFixed(1)
+            //console.log('Random Adjustments: ' + rnd1 + ', ' + rnd2)
+            var qty = (new Number(rnd1) + 1) * (10**9)
+            var price = (10 - new Number(rnd2)) * (10**6)
+            //console.log('Qty: ' + qty + ' Price: ' + price)
+            try {
+                if ((i % 2) == 0) {
+                    //console.log('Ask')
+                    console.log('Ask Qty: ' + qty + ' Price: ' + price)
+                    console.log(await limitOrder('ask', userWallet, resultData1, qty.toFixed(0), price.toFixed(0), false))
+                    var res = await aquadex.account.tradeResult.fetch(resultData1.publicKey)
+                    //console.log(formatOrder(res))
+                } else {
+                    //console.log('Bid')
+                    console.log('Bid Qty: ' + qty + ' Price: ' + price)
+                    console.log(await limitOrder('bid', userWallet, resultData1, qty.toFixed(0), price.toFixed(0), false))
+                    var res = await aquadex.account.tradeResult.fetch(resultData1.publicKey)
+                    //console.log(formatOrder(res))
+                }
+            } catch (error) {
+                console.log('Error')
+                console.log(error)
             }
-        } catch (error) {
-            console.log('Error')
-            console.log(error)
+            await timer(3000)
+            /*if (i === 11) {
+                break
+            }*/
         }
-        /*if (i === 11) {
-            break
-        }*/
     }
 }
 
