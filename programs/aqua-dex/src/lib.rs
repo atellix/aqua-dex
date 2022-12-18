@@ -1199,7 +1199,6 @@ pub mod aqua_dex {
             log_rollover: false,
             log_deposit_balance: 0,
             action_counter: 0,
-            trade_counter: 0,
             order_counter: 0,
             active_bid: 0,
             active_ask: 0,
@@ -4534,7 +4533,6 @@ pub struct MarketState {
     pub log_rollover: bool,             // Request for a new settlement log account for rollover
     pub log_deposit_balance: u64,       // Lamports deposited for allocate new settlement log space
     pub action_counter: u64,            // Action ids
-    pub trade_counter: u64,             // Trade ids
     pub order_counter: u64,             // Order index for Critmap ids (lower 64 bits)
     pub active_bid: u64,                // Active bid orders in the orderbook
     pub active_ask: u64,                // Active ask orders in the orderbook

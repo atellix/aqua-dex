@@ -240,10 +240,11 @@ async function main() {
     const mktData = JSON.parse(ndjs.toString())
     const marketPK = new PublicKey(mktData.market)
     const marketStatePK = new PublicKey(mktData.marketState)
-    const marketSpec = await aquadex.account.market.fetch(marketPK)
-    const settle0 = await provider.connection.getAccountInfo(marketSpec.settle0)
+    const marketSpec = await aquadex.account.marketState.fetch(marketStatePK)
+    const settlePK = marketSpec.settleA
+    const settle = await provider.connection.getAccountInfo(settlePK)
     //console.log(settle0.data)
-    const logs = decodeSettlementLog(settle0.data)
+    const logs = decodeSettlementLog(settle.data)
     const wallet = provider.wallet.publicKey.toString()
     const now = new Date()
     for (const l of logs.entries) {
@@ -251,7 +252,7 @@ async function main() {
         const logDiff = Math.floor(Math.abs(logDate.getTime() - now.getTime()) / 1000) // Seconds
         //console.log(logDate + ' ' + logDiff)
         // Find entries not updated within the past hour
-        if (logDiff >= (60 * 60)) {
+        if (logDiff >= (1 * 60)) {
             console.log('Vault Deposit: ' + l.owner)
             const vaultOwnerPK = new PublicKey(l.owner)
             const vault = await programAddress([marketPK.toBuffer(), vaultOwnerPK.toBuffer()], aquadexPK)
@@ -259,12 +260,12 @@ async function main() {
             var prevPK = logs.prev
             var nextPK = logs.next
             if (prevPK.toString() === '11111111111111111111111111111111') {
-                prevPK = marketSpec.settle0
+                prevPK = settlePK
             }
             if (nextPK.toString() === '11111111111111111111111111111111') {
-                nextPK = marketSpec.settle0
+                nextPK = settlePK
             }
-            console.log(await aquadex.rpc.vaultDeposit(
+            var res = await aquadex.rpc.vaultDeposit(
                 {
                     accounts: {
                         market: marketPK,
@@ -272,14 +273,15 @@ async function main() {
                         admin: new PublicKey(admin.pubkey),
                         manager: provider.wallet.publicKey,
                         owner: new PublicKey(l.owner),
-                        settle: marketSpec.settle0,
+                        settle: settlePK,
                         settlePrev: prevPK,
                         settleNext: nextPK,
                         vault: new PublicKey(vault.pubkey),
                         systemProgram: SystemProgram.programId,
                     },
                 },
-            ))
+            )
+            //console.log(res)
         }
     }
 }
