@@ -508,6 +508,7 @@ fn settle_account(settle: &AccountInfo, owner_id: u128, owner: &Pubkey, mkt_toke
             entry.set_prc_token_balance(prc_bal);
             new_balance = prc_bal;
         }
+        entry.set_ts_updated(clock_ts);
     }
     Ok(new_balance)
 }
@@ -3558,7 +3559,7 @@ pub mod aqua_dex {
         })
     }
 
-    // Deposit or withdraw lamports for settlement log accounts and reimbursements
+    // Withdraw lamports for user vault space, etc.
     pub fn manager_transfer_sol<'a, 'b, 'c, 'info>(ctx: Context<'a, 'b, 'c, 'info, ManagerTransferSol<'info>>,
         inp_withdraw: bool,
         inp_all: bool,
@@ -3569,8 +3570,8 @@ pub mod aqua_dex {
         let state = &mut ctx.accounts.state;
         let acc_manager = &ctx.accounts.manager.to_account_info();
 
-        if admin.fee_manager != *acc_manager.key {
-            msg!("Not fee manager");
+        if admin.vault_manager != *acc_manager.key {
+            msg!("Not vault manager");
             return Err(ErrorCode::AccessDenied.into());
         }
         verify_matching_accounts(&market.state, &state.key(), Some(String::from("Invalid market state")))?;
