@@ -114,6 +114,13 @@ impl UserRBAC {
 
 #[repr(u16)]
 #[derive(PartialEq, Debug, Eq, Copy, Clone, IntoPrimitive)]
+pub enum UserDT {           // User RBAC Types
+    UserRBACMap,            // CritMap
+    UserRBAC,               // SlabVec
+}
+
+#[repr(u16)]
+#[derive(PartialEq, Debug, Eq, Copy, Clone, IntoPrimitive)]
 pub enum OrderDT {          // Orders data types
     BidOrderMap,            // CritMap - bid side of the orderbook
     AskOrderMap,            // CritMap - ask side of the orderbook
@@ -294,7 +301,8 @@ fn map_datatype(data_type: DT) -> u16 {
     match data_type {
         DT::BidOrder => OrderDT::BidOrderMap as u16,
         DT::AskOrder => OrderDT::AskOrderMap as u16,
-        DT::Account  => SettleDT::AccountMap as u16,
+        DT::Account => SettleDT::AccountMap as u16,
+        DT::UserRBAC => UserDT::UserRBACMap as u16,
         _ => { panic!("Invalid datatype") },
     }
 }
@@ -304,7 +312,8 @@ fn map_len(data_type: DT) -> u32 {
     match data_type {
         DT::BidOrder => MAX_ORDERS,
         DT::AskOrder => MAX_ORDERS,
-        DT::Account  => MAX_ACCOUNTS,
+        DT::Account => MAX_ACCOUNTS,
+        DT::UserRBAC => MAX_RBAC,
         _ => { panic!("Invalid datatype") },
     }
 }
@@ -315,6 +324,7 @@ fn index_datatype(data_type: DT) -> u16 {
         DT::BidOrder => OrderDT::BidOrder as u16,
         DT::AskOrder => OrderDT::AskOrder as u16,
         DT::Account => SettleDT::Account as u16,
+        DT::UserRBAC => UserDT::UserRBAC as u16,
         _ => { panic!("Invalid datatype") },
     }
 }
@@ -431,7 +441,7 @@ fn has_role(acc_auth: &AccountInfo, role: Role, key: &Pubkey) -> anchor_lang::Re
         msg!("User key does not match signer");
         return Err(ErrorCode::AccessDenied.into());
     }
-    let urec = rd.index::<UserRBAC>(DT::UserRBAC as u16, authrec.unwrap().slot() as usize);
+    let urec = rd.index::<UserRBAC>(index_datatype(DT::UserRBAC), authrec.unwrap().slot() as usize);
     if urec.role() != role {
         msg!("Role does not match");
         return Err(ErrorCode::AccessDenied.into());
@@ -855,11 +865,17 @@ pub mod aqua_dex {
         let auth_data: &mut[u8] = &mut ctx.accounts.auth_data.try_borrow_mut_data()?;
         let rd = SlabPageAlloc::new(auth_data);
         rd.setup_page_table();
-        rd.allocate::<CritMapHeader, AnyNode>(DT::UserRBACMap as u16, MAX_RBAC as usize).expect("Failed to allocate");
-        rd.allocate::<SlabVec, UserRBAC>(DT::UserRBAC as u16, MAX_RBAC as usize).expect("Failed to allocate");
+        rd.allocate::<CritMapHeader, AnyNode>(UserDT::UserRBACMap as u16, MAX_RBAC as usize).expect("Failed to allocate");
+        rd.allocate::<SlabVec, UserRBAC>(UserDT::UserRBAC as u16, MAX_RBAC as usize).expect("Failed to allocate");
 
         msg!("Atellix: Initialized AquaDEX Program");
 
+        Ok(())
+    }
+
+    // Remove before deployment
+    pub fn deactivate(_ctx: Context<Deactivate>) -> anchor_lang::Result<()> {
+        msg!("Atellix: Deactivate");
         Ok(())
     }
 
@@ -919,12 +935,6 @@ pub mod aqua_dex {
             return Err(ErrorCode::AccessDenied.into());
         }
 
-        // Verify not assigning roles to self
-        if *acc_admn.key == *acc_rbac.key {
-            msg!("Cannot grant roles to self");
-            return Err(ErrorCode::AccessDenied.into());
-        }
-
         let auth_data: &mut[u8] = &mut acc_auth.try_borrow_mut_data()?;
         let rd = SlabPageAlloc::new(auth_data);
         let authhash: u128 = CritMap::bytes_hash([[role as u32].as_byte_slice(), acc_rbac.key.as_ref()].concat().as_slice());
@@ -943,7 +953,7 @@ pub mod aqua_dex {
             let rbac_idx = UserRBAC::next_index(rd, DT::UserRBAC)?;
             let mut cm = CritMap { slab: rd, type_id: map_datatype(DT::UserRBAC), capacity: map_len(DT::UserRBAC) };
             cm.get_key_mut(authhash).unwrap().set_slot(rbac_idx);
-            *rd.index_mut(DT::UserRBAC as u16, rbac_idx as usize) = UserRBAC { role: role, free: 0 };
+            *rd.index_mut(index_datatype(DT::UserRBAC), rbac_idx as usize) = UserRBAC { role: role, free: 0 };
             msg!("Atellix: Role granted");
         }
         Ok(())
@@ -1398,9 +1408,9 @@ pub mod aqua_dex {
             let posted_order = ob.index::<Order>(OrderDT::AskOrder as u16, posted_node.slot() as usize);
             let posted_qty = posted_order.amount;
             let posted_price = Order::price(posted_node.key());
-            msg!("Atellix: Matched Ask [{}] {} @ {}", posted_node.slot().to_string(), posted_qty.to_string(), posted_price.to_string());
             if posted_price <= inp_price {
                 // Fill order
+                msg!("Atellix: Matched Ask [{}] {} @ {}", posted_node.slot().to_string(), posted_qty.to_string(), posted_price.to_string());
                 if posted_qty == tokens_to_fill {         // Match the entire order exactly
                     tokens_filled = tokens_filled.checked_add(tokens_to_fill).ok_or(error!(ErrorCode::Overflow))?;
                     let tokens_part = scale_price(tokens_to_fill, posted_price, mkt_decimal_factor)?;
@@ -1802,9 +1812,9 @@ pub mod aqua_dex {
             let posted_order = ob.index::<Order>(OrderDT::BidOrder as u16, posted_node.slot() as usize);
             let posted_qty = posted_order.amount;
             let posted_price = Order::price(posted_node.key());
-            msg!("Atellix: Matched Bid [{}] {} @ {}", posted_node.slot().to_string(), posted_qty.to_string(), posted_price.to_string());
             if posted_price >= inp_price {
                 // Fill order
+                msg!("Atellix: Matched Bid [{}] {} @ {}", posted_node.slot().to_string(), posted_qty.to_string(), posted_price.to_string());
                 if posted_qty == tokens_to_fill {         // Match the entire order exactly
                     tokens_filled = tokens_filled.checked_add(tokens_to_fill).ok_or(error!(ErrorCode::Overflow))?;
                     let tokens_part = scale_price(tokens_to_fill, posted_price, mkt_decimal_factor)?;
@@ -3985,6 +3995,19 @@ pub struct Initialize<'info> {
     pub system_program: Program<'info, System>,
 }
 
+// Remove before deployment
+#[derive(Accounts)]
+pub struct Deactivate<'info> {
+    #[account(mut, seeds = [program_id.as_ref()], bump, close = program_admin)]
+    pub root_data: Account<'info, RootData>,
+    #[account(constraint = program.programdata_address().unwrap() == Some(program_data.key()))]
+    pub program: Program<'info, AquaDex>,
+    #[account(constraint = program_data.upgrade_authority_address == Some(program_admin.key()))]
+    pub program_data: Account<'info, ProgramData>,
+    #[account(mut)]
+    pub program_admin: Signer<'info>,
+}
+
 #[derive(Accounts)]
 pub struct UpdateMetadata<'info> {
     #[account(constraint = program.programdata_address().unwrap() == Some(program_data.key()))]
@@ -4030,8 +4053,8 @@ pub struct CreateMarket<'info> {
     /// CHECK: ok
     #[account(seeds = [market.key().as_ref()], bump = inp_agent_nonce)]
     pub agent: AccountInfo<'info>,
-    #[account(mut, signer)]
-    pub manager: AccountInfo<'info>,
+    #[account(mut)]
+    pub manager: Signer<'info>,
     /// CHECK: ok
     pub fee_manager: AccountInfo<'info>,
     /// CHECK: ok

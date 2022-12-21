@@ -251,9 +251,8 @@ async function main() {
         const logDate = new Date(l.ts_updated * 1000)
         const logDiff = Math.floor(Math.abs(logDate.getTime() - now.getTime()) / 1000) // Seconds
         //console.log(logDate + ' ' + logDiff)
-        // Find entries not updated within the past hour
+        // Find entries not updated within the past X minute(s)
         if (logDiff >= (1 * 60)) {
-            console.log('Vault Deposit: ' + l.owner)
             const vaultOwnerPK = new PublicKey(l.owner)
             const vault = await programAddress([marketPK.toBuffer(), vaultOwnerPK.toBuffer()], aquadexPK)
             const admin = await programAddress([marketPK.toBuffer(), Buffer.from('admin', 'utf8')], aquadexPK)
@@ -281,6 +280,7 @@ async function main() {
                     },
                 },
             )
+            console.log('Vault Deposit: ' + l.owner + ' ' + res)
             //console.log(res)
         }
     }

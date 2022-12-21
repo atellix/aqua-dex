@@ -39,7 +39,7 @@ function importSecretKey(keyStr) {
 async function main() {
     var mjs
     try {
-        mjs = await fs.readFile('market_3.json')
+        mjs = await fs.readFile('market_4.json')
     } catch (error) {
         console.error('File Error: ', error)
     }

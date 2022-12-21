@@ -112,7 +112,7 @@ const timer = ms => new Promise(res => setTimeout(res, ms))
 async function readMarketSpec() {
     var mjs
     try {
-        mjs = await fs.readFile('market_3.json')
+        mjs = await fs.readFile('market_4.json')
     } catch (error) {
         console.error('File Error: ', error)
     }
@@ -234,7 +234,7 @@ async function main() {
 
     for (var k = 0; k < 100; k++) {
         var last = users.length
-        last = 20
+        //last = 20
         for (var i = 0; i < last; i++) {
             var user = users[i]
             //console.log('User: ' + (i + 1) + ' PK: ' + user.pubkey)

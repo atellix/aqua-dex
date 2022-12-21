@@ -76,6 +76,8 @@ async function main() {
     writeData['settle1'] = settle1.publicKey.toString()
     writeData['settle2'] = settle2.publicKey.toString()
 
+    // 2 + ((8 + 8 + 8 + (16 * 2)) * 4) = 226
+
     const ordersBytes = 226 + (16384 * 6)
     const ordersRent = await provider.connection.getMinimumBalanceForRentExemption(ordersBytes)
 
@@ -222,7 +224,7 @@ async function main() {
     console.log(await provider.sendAndConfirm(tx))
 
     try {
-        await fs.writeFile('market_3.json', JSON.stringify(writeData, null, 4))
+        await fs.writeFile('market_4.json', JSON.stringify(writeData, null, 4))
     } catch (error) {
         console.log("File Error: " + error)
     }
