@@ -230,16 +230,10 @@ function decodeSettlementLog(data) {
 }
 
 async function main() {
-    var ndjs
     var market = process.argv[2]
-    try {
-        ndjs = await fs.readFile(market)
-    } catch (error) {
-        console.error('File Error: ', error)
-    }
-    const mktData = JSON.parse(ndjs.toString())
-    const marketPK = new PublicKey(mktData.market)
-    const marketStatePK = new PublicKey(mktData.marketState)
+    const marketPK = new PublicKey(market)
+    const marketData = await aquadex.account.market.fetch(marketPK)
+    const marketStatePK = marketData.state
     const marketSpec = await aquadex.account.marketState.fetch(marketStatePK)
     const settlePK = marketSpec.settleA
     const settle = await provider.connection.getAccountInfo(settlePK)
