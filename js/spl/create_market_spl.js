@@ -189,7 +189,8 @@ async function main() {
         true,                                   // Expire enable
         new anchor.BN(1),                       // Min expire
         new anchor.BN(0),                       // Min quantity
-        new anchor.BN(4000),                    // Taker fee (X / 10,000,000; or 1,000 = 1 BPS)
+        new anchor.BN(3600),                    // Taker fee (X / 10,000,000; or 1,000 = 1 BPS)
+        new anchor.BN(2500),                    // Maker rebate (X / 10,000,000; or 1,000 = 1 BPS)
         new anchor.BN(0),                       // Log fee (reserve space in settlement log)
         new anchor.BN(0),                       // Log rebate (when closing settled position)
         new anchor.BN(0),                       // Log reimburse (for creating new settlement log accounts)

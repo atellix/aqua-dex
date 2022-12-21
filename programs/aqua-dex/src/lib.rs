@@ -296,7 +296,6 @@ pub struct TradeEntry {
 unsafe impl Zeroable for TradeEntry {}
 unsafe impl Pod for TradeEntry {}
 
-#[inline]
 fn map_datatype(data_type: DT) -> u16 {
     match data_type {
         DT::BidOrder => OrderDT::BidOrderMap as u16,
@@ -307,7 +306,6 @@ fn map_datatype(data_type: DT) -> u16 {
     }
 }
 
-#[inline]
 fn map_len(data_type: DT) -> u32 {
     match data_type {
         DT::BidOrder => MAX_ORDERS,
@@ -318,7 +316,6 @@ fn map_len(data_type: DT) -> u32 {
     }
 }
 
-#[inline]
 fn index_datatype(data_type: DT) -> u16 {
     match data_type {
         DT::BidOrder => OrderDT::BidOrder as u16,
@@ -329,7 +326,6 @@ fn index_datatype(data_type: DT) -> u16 {
     }
 }
 
-#[inline]
 fn map_get(pt: &mut SlabPageAlloc, data_type: DT, key: u128) -> Option<LeafNode> {
     let cm = CritMap { slab: pt, type_id: map_datatype(data_type), capacity: map_len(data_type) };
     let res = cm.get_key(key);
@@ -339,7 +335,6 @@ fn map_get(pt: &mut SlabPageAlloc, data_type: DT, key: u128) -> Option<LeafNode>
     }
 }
 
-#[inline]
 fn map_min(pt: &mut SlabPageAlloc, data_type: DT) -> Option<LeafNode> {
     let cm = CritMap { slab: pt, type_id: map_datatype(data_type), capacity: map_len(data_type) };
     let res = cm.get_min();
@@ -349,7 +344,6 @@ fn map_min(pt: &mut SlabPageAlloc, data_type: DT) -> Option<LeafNode> {
     }
 }
 
-#[inline]
 fn map_max(pt: &mut SlabPageAlloc, data_type: DT) -> Option<LeafNode> {
     let cm = CritMap { slab: pt, type_id: map_datatype(data_type), capacity: map_len(data_type) };
     let res = cm.get_max();
@@ -359,7 +353,6 @@ fn map_max(pt: &mut SlabPageAlloc, data_type: DT) -> Option<LeafNode> {
     }
 }
 
-#[inline]
 fn map_predicate_min<F: FnMut(&SlabPageAlloc, &LeafNode) -> bool>(pt: &mut SlabPageAlloc, data_type: DT, predicate: F) -> Option<LeafNode> {
     let cm = CritMap { slab: pt, type_id: map_datatype(data_type), capacity: map_len(data_type) };
     let res = cm.predicate_min(predicate);
@@ -369,7 +362,6 @@ fn map_predicate_min<F: FnMut(&SlabPageAlloc, &LeafNode) -> bool>(pt: &mut SlabP
     }
 }
 
-#[inline]
 fn map_predicate_max<F: FnMut(&SlabPageAlloc, &LeafNode) -> bool>(pt: &mut SlabPageAlloc, data_type: DT, predicate: F) -> Option<LeafNode> {
     let cm = CritMap { slab: pt, type_id: map_datatype(data_type), capacity: map_len(data_type) };
     let res = cm.predicate_max(predicate);
@@ -379,7 +371,6 @@ fn map_predicate_max<F: FnMut(&SlabPageAlloc, &LeafNode) -> bool>(pt: &mut SlabP
     }
 }
 
-#[inline]
 fn map_insert(pt: &mut SlabPageAlloc, data_type: DT, node: &LeafNode) -> FnResult<(), SlabTreeError> {
     let mut cm = CritMap { slab: pt, type_id: map_datatype(data_type), capacity: map_len(data_type) };
     let res = cm.insert_leaf(node);
@@ -392,20 +383,17 @@ fn map_insert(pt: &mut SlabPageAlloc, data_type: DT, node: &LeafNode) -> FnResul
     }
 }
 
-#[inline]
 fn map_remove(pt: &mut SlabPageAlloc, data_type: DT, key: u128) -> anchor_lang::Result<()> {
     let mut cm = CritMap { slab: pt, type_id: map_datatype(data_type), capacity: map_len(data_type) };
     cm.remove_by_key(key).ok_or(error!(ErrorCode::RecordNotFound))?;
     Ok(())
 }
 
-#[inline]
 fn load_struct<T: AccountDeserialize>(acc: &AccountInfo) -> FnResult<T, ProgramError> {
     let mut data: &[u8] = &acc.try_borrow_data()?;
     Ok(T::try_deserialize(&mut data)?)
 }
 
-#[inline]
 fn store_struct<T: AccountSerialize>(obj: &T, acc: &AccountInfo) -> FnResult<(), Error> {
     let mut data = acc.try_borrow_mut_data()?;
     let dst: &mut [u8] = &mut data;
@@ -413,7 +401,6 @@ fn store_struct<T: AccountSerialize>(obj: &T, acc: &AccountInfo) -> FnResult<(),
     obj.try_serialize(&mut crs)
 }
 
-#[inline]
 fn scale_price(quantity: u64, price: u64, decimal_factor: u64) -> anchor_lang::Result<u64> {
     let mut tokens_calc: u128 = (quantity as u128).checked_mul(price as u128).ok_or(error!(ErrorCode::Overflow))?;
     tokens_calc = tokens_calc.checked_div(decimal_factor as u128).ok_or(error!(ErrorCode::Overflow))?;
@@ -421,7 +408,6 @@ fn scale_price(quantity: u64, price: u64, decimal_factor: u64) -> anchor_lang::R
     return Ok(tokens);
 }
 
-#[inline]
 fn fill_quantity(input_price: u64, order_price: u64, decimal_factor: u64) -> anchor_lang::Result<u64> {
     let mut tokens_calc: u128 = (input_price as u128).checked_mul(decimal_factor as u128).ok_or(error!(ErrorCode::Overflow))?;
     tokens_calc = tokens_calc.checked_div(order_price as u128).ok_or(error!(ErrorCode::Overflow))?;
@@ -449,12 +435,17 @@ fn has_role(acc_auth: &AccountInfo, role: Role, key: &Pubkey) -> anchor_lang::Re
     Ok(())
 }
 
-#[inline]
 fn calculate_fee(fee_rate: u32, base_amount: u64) -> anchor_lang::Result<u64> {
     let mut fee: u128 = (base_amount as u128).checked_mul(fee_rate as u128).ok_or(error!(ErrorCode::Overflow))?;
     fee = fee.checked_div(10000000).ok_or(error!(ErrorCode::Overflow))?;
     let result = u64::try_from(fee).map_err(|_| error!(ErrorCode::Overflow))?;
     Ok(result)
+}
+
+fn decimal_factor(decimals: u8) -> u64 {
+    let decimal_base: u64 = 10;
+    let decimal_factor: u64 = decimal_base.pow(decimals as u32);
+    return decimal_factor
 }
 
 fn verify_matching_accounts(left: &Pubkey, right: &Pubkey, error_msg: Option<String>) -> anchor_lang::Result<()> {
@@ -816,6 +807,7 @@ fn log_trade(
     taker_side: u8,
     amount: u64,
     price: u64,
+    rebate: u64,
     fee: u64,
     ts: i64,
 ) -> anchor_lang::Result<()> {
@@ -843,6 +835,7 @@ fn log_trade(
         market: *market,
         maker_order_id: maker_order_id,
         maker_filled: maker_filled,
+        maker_rebate: rebate,
         maker: *maker,
         taker: *taker,
         taker_side: taker_side,
@@ -1018,6 +1011,7 @@ pub mod aqua_dex {
         inp_expire_min: i64,
         inp_min_quantity: u64,
         inp_taker_fee: u32,
+        inp_maker_rebate: u32,
         inp_log_fee: u64,
         inp_log_rebate: u64,
         inp_log_reimburse: u64,
@@ -1182,6 +1176,7 @@ pub mod aqua_dex {
             log_rebate: inp_log_rebate,
             log_reimburse: inp_log_reimburse,
             taker_fee: inp_taker_fee,
+            maker_rebate: inp_maker_rebate,
             state: *acc_state.key,
             trade_log: *acc_trade_log.key,
             agent: *acc_agent.key,
@@ -1189,12 +1184,10 @@ pub mod aqua_dex {
             manager: *acc_manager.key,
             mkt_mint: *acc_mkt_mint.key,
             mkt_vault: *acc_mkt_vault.key,
-            mkt_nonce: inp_mkt_vault_nonce,
             mkt_decimals: inp_mkt_decimals,
             mkt_mint_type: inp_mkt_mint_type,
             prc_mint: *acc_prc_mint.key,
             prc_vault: *acc_prc_vault.key,
-            prc_nonce: inp_prc_vault_nonce,
             prc_decimals: inp_prc_decimals,
             prc_mint_type: inp_prc_mint_type,
             orders: *acc_orders.key,
@@ -1372,10 +1365,8 @@ pub mod aqua_dex {
 
         msg!("Atellix: Limit Bid: {} @ {}", inp_quantity.to_string(), inp_price.to_string());
 
-        let mkt_decimal_base: u64 = 10;
-        let mkt_decimal_factor: u64 = mkt_decimal_base.pow(market.mkt_decimals as u32);
         let mut tokens_in_calc: u128 = (inp_price as u128).checked_mul(inp_quantity as u128).ok_or(error!(ErrorCode::Overflow))?;
-        tokens_in_calc = tokens_in_calc.checked_div(mkt_decimal_factor as u128).ok_or(error!(ErrorCode::Overflow))?;
+        tokens_in_calc = tokens_in_calc.checked_div(decimal_factor(market.mkt_decimals) as u128).ok_or(error!(ErrorCode::Overflow))?;
         let tokens_in: u64 = u64::try_from(tokens_in_calc).map_err(|_| error!(ErrorCode::Overflow))?;
         if !inp_preview {
             state_upd.action_counter = state_upd.action_counter.checked_add(1).ok_or(error!(ErrorCode::Overflow))?;
@@ -1391,6 +1382,7 @@ pub mod aqua_dex {
         let mut tokens_filled: u64 = 0;
         let mut tokens_paid: u64 = 0;
         let mut tokens_fee: u64 = 0;
+        let mut tokens_rebate: u64 = 0;
         let mut expired_orders = Vec::new();
         let acc_trade_log = &ctx.accounts.trade_log.to_account_info();
         verify_matching_accounts(&market.trade_log, &acc_trade_log.key, Some(String::from("Invalid trade log")))?;
@@ -1413,9 +1405,12 @@ pub mod aqua_dex {
                 msg!("Atellix: Matched Ask [{}] {} @ {}", posted_node.slot().to_string(), posted_qty.to_string(), posted_price.to_string());
                 if posted_qty == tokens_to_fill {         // Match the entire order exactly
                     tokens_filled = tokens_filled.checked_add(tokens_to_fill).ok_or(error!(ErrorCode::Overflow))?;
-                    let tokens_part = scale_price(tokens_to_fill, posted_price, mkt_decimal_factor)?;
+                    let tokens_part = scale_price(tokens_to_fill, posted_price, decimal_factor(market.mkt_decimals))?;
                     tokens_paid = tokens_paid.checked_add(tokens_part).ok_or(error!(ErrorCode::Overflow))?;
+                    let rebate_part = calculate_fee(market.maker_rebate, tokens_part)?;
                     let fee_part = calculate_fee(market.taker_fee, tokens_part)?;
+                    require!(fee_part >= rebate_part, ErrorCode::RebateExceedsFee);
+                    tokens_rebate = tokens_rebate.checked_add(rebate_part).ok_or(error!(ErrorCode::Overflow))?;
                     tokens_fee = tokens_fee.checked_add(fee_part).ok_or(error!(ErrorCode::Overflow))?;
                     msg!("Atellix: Filling - {} @ {}", tokens_part.to_string(), posted_price.to_string());
                     if !inp_preview {
@@ -1430,6 +1425,7 @@ pub mod aqua_dex {
                             Side::Bid as u8,
                             tokens_to_fill,
                             posted_price,
+                            rebate_part,
                             fee_part,
                             clock_ts
                         )?;
@@ -1438,15 +1434,24 @@ pub mod aqua_dex {
                         state_upd.active_ask = state_upd.active_ask.checked_sub(1).ok_or(error!(ErrorCode::Overflow))?;
                         state_upd.last_price = posted_price;
                         state_upd.last_ts = clock_ts;
-                        log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &posted_node.owner(), false, tokens_part)?;
+                        if rebate_part > 0 {
+                            state_upd.prc_order_balance = state_upd.prc_order_balance.checked_add(rebate_part).ok_or(error!(ErrorCode::Overflow))?;
+                            let total = tokens_part.checked_add(rebate_part).ok_or(error!(ErrorCode::Overflow))?;
+                            log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &posted_node.owner(), false, total)?;
+                        } else {
+                            log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &posted_node.owner(), false, tokens_part)?;
+                        }
                     }
                     break;
                 } else if posted_qty < tokens_to_fill {   // Match the entire order and continue
                     tokens_to_fill = tokens_to_fill.checked_sub(posted_qty).ok_or(error!(ErrorCode::Overflow))?;
                     tokens_filled = tokens_filled.checked_add(posted_qty).ok_or(error!(ErrorCode::Overflow))?;
-                    let tokens_part = scale_price(posted_qty, posted_price, mkt_decimal_factor)?;
+                    let tokens_part = scale_price(posted_qty, posted_price, decimal_factor(market.mkt_decimals))?;
                     tokens_paid = tokens_paid.checked_add(tokens_part).ok_or(error!(ErrorCode::Overflow))?;
+                    let rebate_part = calculate_fee(market.maker_rebate, tokens_part)?;
                     let fee_part = calculate_fee(market.taker_fee, tokens_part)?;
+                    require!(fee_part >= rebate_part, ErrorCode::RebateExceedsFee);
+                    tokens_rebate = tokens_rebate.checked_add(rebate_part).ok_or(error!(ErrorCode::Overflow))?;
                     tokens_fee = tokens_fee.checked_add(fee_part).ok_or(error!(ErrorCode::Overflow))?;
                     msg!("Atellix: Filling - {} @ {}", posted_qty.to_string(), posted_price.to_string());
                     if !inp_preview {
@@ -1461,6 +1466,7 @@ pub mod aqua_dex {
                             Side::Bid as u8,
                             posted_qty,
                             posted_price,
+                            rebate_part,
                             fee_part,
                             clock_ts
                         )?;
@@ -1469,13 +1475,22 @@ pub mod aqua_dex {
                         state_upd.active_ask = state_upd.active_ask.checked_sub(1).ok_or(error!(ErrorCode::Overflow))?;
                         state_upd.last_price = posted_price;
                         state_upd.last_ts = clock_ts;
-                        log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &posted_node.owner(), false, tokens_part)?;
+                        if rebate_part > 0 {
+                            state_upd.prc_order_balance = state_upd.prc_order_balance.checked_add(rebate_part).ok_or(error!(ErrorCode::Overflow))?;
+                            let total = tokens_part.checked_add(rebate_part).ok_or(error!(ErrorCode::Overflow))?;
+                            log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &posted_node.owner(), false, total)?;
+                        } else {
+                            log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &posted_node.owner(), false, tokens_part)?;
+                        }
                     }
                 } else if posted_qty > tokens_to_fill {   // Match part of the order
                     tokens_filled = tokens_filled.checked_add(tokens_to_fill).ok_or(error!(ErrorCode::Overflow))?;
-                    let tokens_part = scale_price(tokens_to_fill, posted_price, mkt_decimal_factor)?;
+                    let tokens_part = scale_price(tokens_to_fill, posted_price, decimal_factor(market.mkt_decimals))?;
                     tokens_paid = tokens_paid.checked_add(tokens_part).ok_or(error!(ErrorCode::Overflow))?;
+                    let rebate_part = calculate_fee(market.maker_rebate, tokens_part)?;
                     let fee_part = calculate_fee(market.taker_fee, tokens_part)?;
+                    require!(fee_part >= rebate_part, ErrorCode::RebateExceedsFee);
+                    tokens_rebate = tokens_rebate.checked_add(rebate_part).ok_or(error!(ErrorCode::Overflow))?;
                     tokens_fee = tokens_fee.checked_add(fee_part).ok_or(error!(ErrorCode::Overflow))?;
                     msg!("Atellix: Filling - {} @ {}", tokens_to_fill.to_string(), posted_price.to_string());
                     if !inp_preview {
@@ -1490,6 +1505,7 @@ pub mod aqua_dex {
                             Side::Bid as u8,
                             tokens_to_fill,
                             posted_price,
+                            rebate_part,
                             fee_part,
                             clock_ts
                         )?;
@@ -1497,7 +1513,13 @@ pub mod aqua_dex {
                         ob.index_mut::<Order>(OrderDT::AskOrder as u16, posted_node.slot() as usize).set_amount(new_amount);
                         state_upd.last_price = posted_price;
                         state_upd.last_ts = clock_ts;
-                        log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &posted_node.owner(), false, tokens_part)?;
+                        if rebate_part > 0 {
+                            state_upd.prc_order_balance = state_upd.prc_order_balance.checked_add(rebate_part).ok_or(error!(ErrorCode::Overflow))?;
+                            let total = tokens_part.checked_add(rebate_part).ok_or(error!(ErrorCode::Overflow))?;
+                            log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &posted_node.owner(), false, total)?;
+                        } else {
+                            log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &posted_node.owner(), false, tokens_part)?;
+                        }
                     }
                     break;
                 }
@@ -1585,7 +1607,7 @@ pub mod aqua_dex {
                             evict_order.amount().to_string(),
                             Order::price(evict_node.key()).to_string(),
                         );
-                        let evict_total = scale_price(evict_amount, Order::price(evict_node.key()), mkt_decimal_factor)?;
+                        let evict_total = scale_price(evict_amount, Order::price(evict_node.key()), decimal_factor(market.mkt_decimals))?;
                         log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &evict_node.owner(), false, evict_total)?;
                         map_remove(ob, DT::BidOrder, evict_node.key())?;
                         Order::free_index(ob, DT::BidOrder, evict_node.slot())?;
@@ -1598,7 +1620,7 @@ pub mod aqua_dex {
                     }
                 }
             }
-            let tokens_part = scale_price(tokens_remaining, inp_price, mkt_decimal_factor)?;
+            let tokens_part = scale_price(tokens_remaining, inp_price, decimal_factor(market.mkt_decimals))?;
             tokens_paid = tokens_paid.checked_add(tokens_part).ok_or(error!(ErrorCode::Overflow))?;
             result.set_posted_quantity(tokens_remaining);
             result.set_order_id(order_id);
@@ -1615,6 +1637,7 @@ pub mod aqua_dex {
             // Apply fees
             state_upd.prc_vault_balance = state_upd.prc_vault_balance.checked_add(tokens_fee).ok_or(error!(ErrorCode::Overflow))?;
             state_upd.prc_fees_balance = state_upd.prc_fees_balance.checked_add(tokens_fee).ok_or(error!(ErrorCode::Overflow))?;
+            state_upd.prc_fees_balance = state_upd.prc_fees_balance.checked_sub(tokens_rebate).ok_or(error!(ErrorCode::Overflow))?;
 
             /*msg!("Atellix: Pricing Token Vault Deposit: {}", total_cost.to_string());
             msg!("Atellix: Pricing Token Vault Balance: {} (Orderbook: {})",
@@ -1787,14 +1810,12 @@ pub mod aqua_dex {
         let orderbook_data: &mut[u8] = &mut acc_orders.try_borrow_mut_data()?;
         let ob = SlabPageAlloc::new(orderbook_data);
 
-        let mkt_decimal_base: u64 = 10;
-        let mkt_decimal_factor: u64 = mkt_decimal_base.pow(market.mkt_decimals as u32);
-
         // Check if order can be filled
         let mut tokens_to_fill: u64 = inp_quantity;
         let mut tokens_filled: u64 = 0;
         let mut tokens_received: u64 = 0;
         let mut tokens_fee: u64 = 0;
+        let mut tokens_rebate: u64 = 0;
         let mut expired_orders = Vec::new();
         let acc_trade_log = &ctx.accounts.trade_log.to_account_info();
         verify_matching_accounts(&market.trade_log, &acc_trade_log.key, Some(String::from("Invalid trade log")))?;
@@ -1817,9 +1838,12 @@ pub mod aqua_dex {
                 msg!("Atellix: Matched Bid [{}] {} @ {}", posted_node.slot().to_string(), posted_qty.to_string(), posted_price.to_string());
                 if posted_qty == tokens_to_fill {         // Match the entire order exactly
                     tokens_filled = tokens_filled.checked_add(tokens_to_fill).ok_or(error!(ErrorCode::Overflow))?;
-                    let tokens_part = scale_price(tokens_to_fill, posted_price, mkt_decimal_factor)?;
+                    let tokens_part = scale_price(tokens_to_fill, posted_price, decimal_factor(market.mkt_decimals))?;
                     tokens_received = tokens_received.checked_add(tokens_part).ok_or(error!(ErrorCode::Overflow))?;
+                    let rebate_part = calculate_fee(market.maker_rebate, tokens_part)?;
                     let fee_part = calculate_fee(market.taker_fee, tokens_part)?;
+                    require!(fee_part >= rebate_part, ErrorCode::RebateExceedsFee);
+                    tokens_rebate = tokens_rebate.checked_add(rebate_part).ok_or(error!(ErrorCode::Overflow))?;
                     tokens_fee = tokens_fee.checked_add(fee_part).ok_or(error!(ErrorCode::Overflow))?;
                     msg!("Atellix: Filling - {} @ {}", tokens_part.to_string(), posted_price.to_string());
                     if !inp_preview {
@@ -1834,6 +1858,7 @@ pub mod aqua_dex {
                             Side::Ask as u8,
                             tokens_to_fill,
                             posted_price,
+                            rebate_part,
                             fee_part,
                             clock_ts
                         )?;
@@ -1843,14 +1868,21 @@ pub mod aqua_dex {
                         state_upd.last_price = posted_price;
                         state_upd.last_ts = clock_ts;
                         log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &posted_node.owner(), true, tokens_to_fill)?;
+                        if rebate_part > 0 {
+                            state_upd.prc_order_balance = state_upd.prc_order_balance.checked_add(rebate_part).ok_or(error!(ErrorCode::Overflow))?;
+                            log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &posted_node.owner(), false, rebate_part)?;
+                        }
                     }
                     break;
                 } else if posted_qty < tokens_to_fill {   // Match the entire order and continue
                     tokens_to_fill = tokens_to_fill.checked_sub(posted_qty).ok_or(error!(ErrorCode::Overflow))?;
                     tokens_filled = tokens_filled.checked_add(posted_qty).ok_or(error!(ErrorCode::Overflow))?;
-                    let tokens_part = scale_price(posted_qty, posted_price, mkt_decimal_factor)?;
+                    let tokens_part = scale_price(posted_qty, posted_price, decimal_factor(market.mkt_decimals))?;
                     tokens_received = tokens_received.checked_add(tokens_part).ok_or(error!(ErrorCode::Overflow))?;
+                    let rebate_part = calculate_fee(market.maker_rebate, tokens_part)?;
                     let fee_part = calculate_fee(market.taker_fee, tokens_part)?;
+                    require!(fee_part >= rebate_part, ErrorCode::RebateExceedsFee);
+                    tokens_rebate = tokens_rebate.checked_add(rebate_part).ok_or(error!(ErrorCode::Overflow))?;
                     tokens_fee = tokens_fee.checked_add(fee_part).ok_or(error!(ErrorCode::Overflow))?;
                     msg!("Atellix: Filling - {} @ {}", posted_qty.to_string(), posted_price.to_string());
                     if !inp_preview {
@@ -1865,6 +1897,7 @@ pub mod aqua_dex {
                             Side::Ask as u8,
                             posted_qty,
                             posted_price,
+                            rebate_part,
                             fee_part,
                             clock_ts
                         )?;
@@ -1874,12 +1907,19 @@ pub mod aqua_dex {
                         state_upd.last_price = posted_price;
                         state_upd.last_ts = clock_ts;
                         log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &posted_node.owner(), true, posted_qty)?;
+                        if rebate_part > 0 {
+                            state_upd.prc_order_balance = state_upd.prc_order_balance.checked_add(rebate_part).ok_or(error!(ErrorCode::Overflow))?;
+                            log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &posted_node.owner(), false, rebate_part)?;
+                        }
                     }
                 } else if posted_qty > tokens_to_fill {   // Match part of the order
                     tokens_filled = tokens_filled.checked_add(tokens_to_fill).ok_or(error!(ErrorCode::Overflow))?;
-                    let tokens_part = scale_price(tokens_to_fill, posted_price, mkt_decimal_factor)?;
+                    let tokens_part = scale_price(tokens_to_fill, posted_price, decimal_factor(market.mkt_decimals))?;
                     tokens_received = tokens_received.checked_add(tokens_part).ok_or(error!(ErrorCode::Overflow))?;
+                    let rebate_part = calculate_fee(market.maker_rebate, tokens_part)?;
                     let fee_part = calculate_fee(market.taker_fee, tokens_part)?;
+                    require!(fee_part >= rebate_part, ErrorCode::RebateExceedsFee);
+                    tokens_rebate = tokens_rebate.checked_add(rebate_part).ok_or(error!(ErrorCode::Overflow))?;
                     tokens_fee = tokens_fee.checked_add(fee_part).ok_or(error!(ErrorCode::Overflow))?;
                     msg!("Atellix: Filling - {} @ {}", tokens_to_fill.to_string(), posted_price.to_string());
                     if !inp_preview {
@@ -1894,14 +1934,19 @@ pub mod aqua_dex {
                             Side::Ask as u8,
                             tokens_to_fill,
                             posted_price,
+                            rebate_part,
                             fee_part,
                             clock_ts
                         )?;
                         let new_amount = posted_qty.checked_sub(tokens_to_fill).ok_or(error!(ErrorCode::Overflow))?;
                         ob.index_mut::<Order>(OrderDT::BidOrder as u16, posted_node.slot() as usize).set_amount(new_amount);
-                        log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &posted_node.owner(), true, tokens_to_fill)?;
                         state_upd.last_price = posted_price;
                         state_upd.last_ts = clock_ts;
+                        log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &posted_node.owner(), true, tokens_to_fill)?;
+                        if rebate_part > 0 {
+                            state_upd.prc_order_balance = state_upd.prc_order_balance.checked_add(rebate_part).ok_or(error!(ErrorCode::Overflow))?;
+                            log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &posted_node.owner(), false, rebate_part)?;
+                        }
                     }
                     break;
                 }
@@ -1930,7 +1975,7 @@ pub mod aqua_dex {
                     Order::price(expire_leaf.key()).to_string(),
                 );
                 let expire_price = Order::price(expire_leaf.key());
-                let expire_total = scale_price(expire_amount, expire_price, mkt_decimal_factor)?;
+                let expire_total = scale_price(expire_amount, expire_price, decimal_factor(market.mkt_decimals))?;
                 emit!(ExpireEvent {
                     event_type: 16332991664789055110548783525139174482, // solana/program/aqua-dex/expire_event
                     action_id: state_upd.action_counter,
@@ -2044,6 +2089,7 @@ pub mod aqua_dex {
                 // Apply fees
                 state_upd.prc_vault_balance = state_upd.prc_vault_balance.checked_add(tokens_fee).ok_or(error!(ErrorCode::Overflow))?;
                 state_upd.prc_fees_balance = state_upd.prc_fees_balance.checked_add(tokens_fee).ok_or(error!(ErrorCode::Overflow))?;
+                state_upd.prc_fees_balance = state_upd.prc_fees_balance.checked_sub(tokens_rebate).ok_or(error!(ErrorCode::Overflow))?;
 
                 //msg!("Atellix: Pricing Token Vault Withdraw: {}", tokens_received.to_string());
                 /*msg!("Atellix: Pricing Token Vault Balance: {} (Orderbook: {})",
@@ -2164,9 +2210,6 @@ pub mod aqua_dex {
 
         msg!("Atellix: Market Bid: By Qty: {} Quantity: {} Net Price: {}", inp_by_quantity.to_string(), inp_quantity.to_string(), inp_net_price.to_string());
 
-        let mkt_decimal_base: u64 = 10;
-        let mkt_decimal_factor: u64 = mkt_decimal_base.pow(market.mkt_decimals as u32);
-
         if !inp_preview {
             state_upd.action_counter = state_upd.action_counter.checked_add(1).ok_or(error!(ErrorCode::Overflow))?;
         }
@@ -2180,6 +2223,7 @@ pub mod aqua_dex {
         let mut tokens_filled: u64 = 0;
         let mut tokens_paid: u64 = 0;
         let mut tokens_fee: u64 = 0;
+        let mut tokens_rebate: u64 = 0;
         let mut expired_orders = Vec::new();
         let acc_trade_log = &ctx.accounts.trade_log.to_account_info();
         verify_matching_accounts(&market.trade_log, &acc_trade_log.key, Some(String::from("Invalid trade log")))?;
@@ -2203,9 +2247,12 @@ pub mod aqua_dex {
                 // Fill until quantity
                 if posted_qty == tokens_to_fill {         // Match the entire order exactly
                     tokens_filled = tokens_filled.checked_add(tokens_to_fill).ok_or(error!(ErrorCode::Overflow))?;
-                    let tokens_part = scale_price(tokens_to_fill, posted_price, mkt_decimal_factor)?;
+                    let tokens_part = scale_price(tokens_to_fill, posted_price, decimal_factor(market.mkt_decimals))?;
                     tokens_paid = tokens_paid.checked_add(tokens_part).ok_or(error!(ErrorCode::Overflow))?;
+                    let rebate_part = calculate_fee(market.maker_rebate, tokens_part)?;
                     let fee_part = calculate_fee(market.taker_fee, tokens_part)?;
+                    require!(fee_part >= rebate_part, ErrorCode::RebateExceedsFee);
+                    tokens_rebate = tokens_rebate.checked_add(rebate_part).ok_or(error!(ErrorCode::Overflow))?;
                     tokens_fee = tokens_fee.checked_add(fee_part).ok_or(error!(ErrorCode::Overflow))?;
                     msg!("Atellix: Filling - {} @ {}", tokens_part.to_string(), posted_price.to_string());
                     if !inp_preview {
@@ -2220,6 +2267,7 @@ pub mod aqua_dex {
                             Side::Bid as u8,
                             tokens_to_fill,
                             posted_price,
+                            rebate_part,
                             fee_part,
                             clock_ts
                         )?;
@@ -2230,15 +2278,24 @@ pub mod aqua_dex {
                         state_upd.prc_order_balance = state_upd.prc_order_balance.checked_add(tokens_part).ok_or(error!(ErrorCode::Overflow))?;
                         state_upd.last_price = posted_price;
                         state_upd.last_ts = clock_ts;
-                        log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &posted_node.owner(), false, tokens_part)?;
+                        if rebate_part > 0 {
+                            state_upd.prc_order_balance = state_upd.prc_order_balance.checked_add(rebate_part).ok_or(error!(ErrorCode::Overflow))?;
+                            let total = tokens_part.checked_add(rebate_part).ok_or(error!(ErrorCode::Overflow))?;
+                            log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &posted_node.owner(), false, total)?;
+                        } else {
+                            log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &posted_node.owner(), false, tokens_part)?;
+                        }
                     }
                     break;
                 } else if posted_qty < tokens_to_fill {   // Match the entire order and continue
                     tokens_to_fill = tokens_to_fill.checked_sub(posted_qty).ok_or(error!(ErrorCode::Overflow))?;
                     tokens_filled = tokens_filled.checked_add(posted_qty).ok_or(error!(ErrorCode::Overflow))?;
-                    let tokens_part = scale_price(posted_qty, posted_price, mkt_decimal_factor)?;
+                    let tokens_part = scale_price(posted_qty, posted_price, decimal_factor(market.mkt_decimals))?;
                     tokens_paid = tokens_paid.checked_add(tokens_part).ok_or(error!(ErrorCode::Overflow))?;
+                    let rebate_part = calculate_fee(market.maker_rebate, tokens_part)?;
                     let fee_part = calculate_fee(market.taker_fee, tokens_part)?;
+                    require!(fee_part >= rebate_part, ErrorCode::RebateExceedsFee);
+                    tokens_rebate = tokens_rebate.checked_add(rebate_part).ok_or(error!(ErrorCode::Overflow))?;
                     tokens_fee = tokens_fee.checked_add(fee_part).ok_or(error!(ErrorCode::Overflow))?;
                     msg!("Atellix: Filling - {} @ {}", posted_qty.to_string(), posted_price.to_string());
                     if !inp_preview {
@@ -2253,6 +2310,7 @@ pub mod aqua_dex {
                             Side::Bid as u8,
                             posted_qty,
                             posted_price,
+                            rebate_part,
                             fee_part,
                             clock_ts
                         )?;
@@ -2263,13 +2321,22 @@ pub mod aqua_dex {
                         state_upd.prc_order_balance = state_upd.prc_order_balance.checked_add(tokens_part).ok_or(error!(ErrorCode::Overflow))?;
                         state_upd.last_price = posted_price;
                         state_upd.last_ts = clock_ts;
-                        log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &posted_node.owner(), false, tokens_part)?;
+                        if rebate_part > 0 {
+                            state_upd.prc_order_balance = state_upd.prc_order_balance.checked_add(rebate_part).ok_or(error!(ErrorCode::Overflow))?;
+                            let total = tokens_part.checked_add(rebate_part).ok_or(error!(ErrorCode::Overflow))?;
+                            log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &posted_node.owner(), false, total)?;
+                        } else {
+                            log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &posted_node.owner(), false, tokens_part)?;
+                        }
                     }
                 } else if posted_qty > tokens_to_fill {   // Match part of the order
                     tokens_filled = tokens_filled.checked_add(tokens_to_fill).ok_or(error!(ErrorCode::Overflow))?;
-                    let tokens_part = scale_price(tokens_to_fill, posted_price, mkt_decimal_factor)?;
+                    let tokens_part = scale_price(tokens_to_fill, posted_price, decimal_factor(market.mkt_decimals))?;
                     tokens_paid = tokens_paid.checked_add(tokens_part).ok_or(error!(ErrorCode::Overflow))?;
+                    let rebate_part = calculate_fee(market.maker_rebate, tokens_part)?;
                     let fee_part = calculate_fee(market.taker_fee, tokens_part)?;
+                    require!(fee_part >= rebate_part, ErrorCode::RebateExceedsFee);
+                    tokens_rebate = tokens_rebate.checked_add(rebate_part).ok_or(error!(ErrorCode::Overflow))?;
                     tokens_fee = tokens_fee.checked_add(fee_part).ok_or(error!(ErrorCode::Overflow))?;
                     msg!("Atellix: Filling - {} @ {}", tokens_to_fill.to_string(), posted_price.to_string());
                     if !inp_preview {
@@ -2284,6 +2351,7 @@ pub mod aqua_dex {
                             Side::Bid as u8,
                             tokens_to_fill,
                             posted_price,
+                            rebate_part,
                             fee_part,
                             clock_ts
                         )?;
@@ -2293,17 +2361,26 @@ pub mod aqua_dex {
                         state_upd.prc_order_balance = state_upd.prc_order_balance.checked_add(tokens_part).ok_or(error!(ErrorCode::Overflow))?;
                         state_upd.last_price = posted_price;
                         state_upd.last_ts = clock_ts;
-                        log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &posted_node.owner(), false, tokens_part)?;
+                        if rebate_part > 0 {
+                            state_upd.prc_order_balance = state_upd.prc_order_balance.checked_add(rebate_part).ok_or(error!(ErrorCode::Overflow))?;
+                            let total = tokens_part.checked_add(rebate_part).ok_or(error!(ErrorCode::Overflow))?;
+                            log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &posted_node.owner(), false, total)?;
+                        } else {
+                            log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &posted_node.owner(), false, tokens_part)?;
+                        }
                     }
                     break;
                 }
             } else {
                 // Fill until price
-                let posted_part = scale_price(posted_qty, posted_price, mkt_decimal_factor)?;
+                let posted_part = scale_price(posted_qty, posted_price, decimal_factor(market.mkt_decimals))?;
                 if posted_part == price_to_fill {         // Match the entire order exactly
                     tokens_filled = tokens_filled.checked_add(posted_qty).ok_or(error!(ErrorCode::Overflow))?;
                     tokens_paid = tokens_paid.checked_add(posted_part).ok_or(error!(ErrorCode::Overflow))?;
+                    let rebate_part = calculate_fee(market.maker_rebate, posted_part)?;
                     let fee_part = calculate_fee(market.taker_fee, posted_part)?;
+                    require!(fee_part >= rebate_part, ErrorCode::RebateExceedsFee);
+                    tokens_rebate = tokens_rebate.checked_add(rebate_part).ok_or(error!(ErrorCode::Overflow))?;
                     tokens_fee = tokens_fee.checked_add(fee_part).ok_or(error!(ErrorCode::Overflow))?;
                     msg!("Atellix: Filling - {} @ {}", tokens_filled.to_string(), posted_price.to_string());
                     if !inp_preview {
@@ -2318,6 +2395,7 @@ pub mod aqua_dex {
                             Side::Bid as u8,
                             posted_qty,
                             posted_price,
+                            rebate_part,
                             fee_part,
                             clock_ts
                         )?;
@@ -2328,14 +2406,23 @@ pub mod aqua_dex {
                         state_upd.prc_order_balance = state_upd.prc_order_balance.checked_add(posted_part).ok_or(error!(ErrorCode::Overflow))?;
                         state_upd.last_price = posted_price;
                         state_upd.last_ts = clock_ts;
-                        log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &posted_node.owner(), false, posted_part)?;
+                        if rebate_part > 0 {
+                            state_upd.prc_order_balance = state_upd.prc_order_balance.checked_add(rebate_part).ok_or(error!(ErrorCode::Overflow))?;
+                            let total = posted_part.checked_add(rebate_part).ok_or(error!(ErrorCode::Overflow))?;
+                            log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &posted_node.owner(), false, total)?;
+                        } else {
+                            log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &posted_node.owner(), false, posted_part)?;
+                        }
                     }
                     break;
                 } else if posted_part < price_to_fill {   // Match the entire order and continue
                     price_to_fill = price_to_fill.checked_sub(posted_part).ok_or(error!(ErrorCode::Overflow))?;
                     tokens_filled = tokens_filled.checked_add(posted_qty).ok_or(error!(ErrorCode::Overflow))?;
                     tokens_paid = tokens_paid.checked_add(posted_part).ok_or(error!(ErrorCode::Overflow))?;
+                    let rebate_part = calculate_fee(market.maker_rebate, posted_part)?;
                     let fee_part = calculate_fee(market.taker_fee, posted_part)?;
+                    require!(fee_part >= rebate_part, ErrorCode::RebateExceedsFee);
+                    tokens_rebate = tokens_rebate.checked_add(rebate_part).ok_or(error!(ErrorCode::Overflow))?;
                     tokens_fee = tokens_fee.checked_add(fee_part).ok_or(error!(ErrorCode::Overflow))?;
                     msg!("Atellix: Filling - {} @ {}", posted_qty.to_string(), posted_price.to_string());
                     if !inp_preview {
@@ -2350,6 +2437,7 @@ pub mod aqua_dex {
                             Side::Bid as u8,
                             posted_qty,
                             posted_price,
+                            rebate_part,
                             fee_part,
                             clock_ts
                         )?;
@@ -2360,14 +2448,23 @@ pub mod aqua_dex {
                         state_upd.prc_order_balance = state_upd.prc_order_balance.checked_add(posted_part).ok_or(error!(ErrorCode::Overflow))?;
                         state_upd.last_price = posted_price;
                         state_upd.last_ts = clock_ts;
-                        log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &posted_node.owner(), false, posted_part)?;
+                        if rebate_part > 0 {
+                            state_upd.prc_order_balance = state_upd.prc_order_balance.checked_add(rebate_part).ok_or(error!(ErrorCode::Overflow))?;
+                            let total = posted_part.checked_add(rebate_part).ok_or(error!(ErrorCode::Overflow))?;
+                            log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &posted_node.owner(), false, total)?;
+                        } else {
+                            log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &posted_node.owner(), false, posted_part)?;
+                        }
                     }
                 } else if posted_part > price_to_fill {   // Match part of the order
                     // Calculate filled tokens
-                    let fill_amount = fill_quantity(price_to_fill, posted_price, mkt_decimal_factor)?;
+                    let fill_amount = fill_quantity(price_to_fill, posted_price, decimal_factor(market.mkt_decimals))?;
                     tokens_filled = tokens_filled.checked_add(fill_amount).ok_or(error!(ErrorCode::Overflow))?;
                     tokens_paid = tokens_paid.checked_add(price_to_fill).ok_or(error!(ErrorCode::Overflow))?;
+                    let rebate_part = calculate_fee(market.maker_rebate, price_to_fill)?;
                     let fee_part = calculate_fee(market.taker_fee, price_to_fill)?;
+                    require!(fee_part >= rebate_part, ErrorCode::RebateExceedsFee);
+                    tokens_rebate = tokens_rebate.checked_add(rebate_part).ok_or(error!(ErrorCode::Overflow))?;
                     tokens_fee = tokens_fee.checked_add(fee_part).ok_or(error!(ErrorCode::Overflow))?;
                     msg!("Atellix: Filling - {} @ {}", fill_amount.to_string(), posted_price.to_string());
                     if !inp_preview {
@@ -2382,6 +2479,7 @@ pub mod aqua_dex {
                             Side::Bid as u8,
                             fill_amount,
                             posted_price,
+                            rebate_part,
                             fee_part,
                             clock_ts
                         )?;
@@ -2391,7 +2489,13 @@ pub mod aqua_dex {
                         state_upd.prc_order_balance = state_upd.prc_order_balance.checked_add(price_to_fill).ok_or(error!(ErrorCode::Overflow))?;
                         state_upd.last_price = posted_price;
                         state_upd.last_ts = clock_ts;
-                        log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &posted_node.owner(), false, price_to_fill)?;
+                        if rebate_part > 0 {
+                            state_upd.prc_order_balance = state_upd.prc_order_balance.checked_add(rebate_part).ok_or(error!(ErrorCode::Overflow))?;
+                            let total = price_to_fill.checked_add(rebate_part).ok_or(error!(ErrorCode::Overflow))?;
+                            log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &posted_node.owner(), false, total)?;
+                        } else {
+                            log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &posted_node.owner(), false, price_to_fill)?;
+                        }
                     }
                     break;
                 }
@@ -2455,6 +2559,7 @@ pub mod aqua_dex {
         if !inp_preview {
             state_upd.prc_vault_balance = state_upd.prc_vault_balance.checked_add(tokens_fee).ok_or(error!(ErrorCode::Overflow))?;
             state_upd.prc_fees_balance = state_upd.prc_fees_balance.checked_add(tokens_fee).ok_or(error!(ErrorCode::Overflow))?;
+            state_upd.prc_fees_balance = state_upd.prc_fees_balance.checked_sub(tokens_rebate).ok_or(error!(ErrorCode::Overflow))?;
         }
 
         /*msg!("Atellix: Pricing Token Vault Deposit: {}", total_cost.to_string());
@@ -2607,15 +2712,13 @@ pub mod aqua_dex {
         let orderbook_data: &mut[u8] = &mut acc_orders.try_borrow_mut_data()?;
         let ob = SlabPageAlloc::new(orderbook_data);
 
-        let mkt_decimal_base: u64 = 10;
-        let mkt_decimal_factor: u64 = mkt_decimal_base.pow(market.mkt_decimals as u32);
-
         // Check if order can be filled
         let mut price_to_fill: u64 = inp_net_price;
         let mut tokens_to_fill: u64 = inp_quantity;
         let mut tokens_filled: u64 = 0;
         let mut tokens_received: u64 = 0;
         let mut tokens_fee: u64 = 0;
+        let mut tokens_rebate: u64 = 0;
         let mut expired_orders = Vec::new();
         let acc_trade_log = &ctx.accounts.trade_log.to_account_info();
         verify_matching_accounts(&market.trade_log, &acc_trade_log.key, Some(String::from("Invalid trade log")))?;
@@ -2638,9 +2741,12 @@ pub mod aqua_dex {
                 // Fill order by quantity
                 if posted_qty == tokens_to_fill {         // Match the entire order exactly
                     tokens_filled = tokens_filled.checked_add(tokens_to_fill).ok_or(error!(ErrorCode::Overflow))?;
-                    let tokens_part = scale_price(tokens_to_fill, posted_price, mkt_decimal_factor)?;
+                    let tokens_part = scale_price(tokens_to_fill, posted_price, decimal_factor(market.mkt_decimals))?;
                     tokens_received = tokens_received.checked_add(tokens_part).ok_or(error!(ErrorCode::Overflow))?;
+                    let rebate_part = calculate_fee(market.maker_rebate, tokens_part)?;
                     let fee_part = calculate_fee(market.taker_fee, tokens_part)?;
+                    require!(fee_part >= rebate_part, ErrorCode::RebateExceedsFee);
+                    tokens_rebate = tokens_rebate.checked_add(rebate_part).ok_or(error!(ErrorCode::Overflow))?;
                     tokens_fee = tokens_fee.checked_add(fee_part).ok_or(error!(ErrorCode::Overflow))?;
                     msg!("Atellix: Filling - {} @ {}", tokens_part.to_string(), posted_price.to_string());
                     if !inp_preview {
@@ -2655,6 +2761,7 @@ pub mod aqua_dex {
                             Side::Ask as u8,
                             tokens_to_fill,
                             posted_price,
+                            rebate_part,
                             fee_part,
                             clock_ts
                         )?;
@@ -2666,14 +2773,21 @@ pub mod aqua_dex {
                         state_upd.last_price = posted_price;
                         state_upd.last_ts = clock_ts;
                         log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &posted_node.owner(), true, tokens_to_fill)?;
+                        if rebate_part > 0 {
+                            state_upd.prc_order_balance = state_upd.prc_order_balance.checked_add(rebate_part).ok_or(error!(ErrorCode::Overflow))?;
+                            log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &posted_node.owner(), false, rebate_part)?;
+                        }
                     }
                     break;
                 } else if posted_qty < tokens_to_fill {   // Match the entire order and continue
                     tokens_to_fill = tokens_to_fill.checked_sub(posted_qty).ok_or(error!(ErrorCode::Overflow))?;
                     tokens_filled = tokens_filled.checked_add(posted_qty).ok_or(error!(ErrorCode::Overflow))?;
-                    let tokens_part = scale_price(posted_qty, posted_price, mkt_decimal_factor)?;
+                    let tokens_part = scale_price(posted_qty, posted_price, decimal_factor(market.mkt_decimals))?;
                     tokens_received = tokens_received.checked_add(tokens_part).ok_or(error!(ErrorCode::Overflow))?;
+                    let rebate_part = calculate_fee(market.maker_rebate, tokens_part)?;
                     let fee_part = calculate_fee(market.taker_fee, tokens_part)?;
+                    require!(fee_part >= rebate_part, ErrorCode::RebateExceedsFee);
+                    tokens_rebate = tokens_rebate.checked_add(rebate_part).ok_or(error!(ErrorCode::Overflow))?;
                     tokens_fee = tokens_fee.checked_add(fee_part).ok_or(error!(ErrorCode::Overflow))?;
                     msg!("Atellix: Filling - {} @ {}", posted_qty.to_string(), posted_price.to_string());
                     if !inp_preview {
@@ -2688,6 +2802,7 @@ pub mod aqua_dex {
                             Side::Ask as u8,
                             posted_qty,
                             posted_price,
+                            rebate_part,
                             fee_part,
                             clock_ts
                         )?;
@@ -2699,12 +2814,19 @@ pub mod aqua_dex {
                         state_upd.last_price = posted_price;
                         state_upd.last_ts = clock_ts;
                         log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &posted_node.owner(), true, posted_qty)?;
+                        if rebate_part > 0 {
+                            state_upd.prc_order_balance = state_upd.prc_order_balance.checked_add(rebate_part).ok_or(error!(ErrorCode::Overflow))?;
+                            log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &posted_node.owner(), false, rebate_part)?;
+                        }
                     }
                 } else if posted_qty > tokens_to_fill {   // Match part of the order
                     tokens_filled = tokens_filled.checked_add(tokens_to_fill).ok_or(error!(ErrorCode::Overflow))?;
-                    let tokens_part = scale_price(tokens_to_fill, posted_price, mkt_decimal_factor)?;
+                    let tokens_part = scale_price(tokens_to_fill, posted_price, decimal_factor(market.mkt_decimals))?;
                     tokens_received = tokens_received.checked_add(tokens_part).ok_or(error!(ErrorCode::Overflow))?;
+                    let rebate_part = calculate_fee(market.maker_rebate, tokens_part)?;
                     let fee_part = calculate_fee(market.taker_fee, tokens_part)?;
+                    require!(fee_part >= rebate_part, ErrorCode::RebateExceedsFee);
+                    tokens_rebate = tokens_rebate.checked_add(rebate_part).ok_or(error!(ErrorCode::Overflow))?;
                     tokens_fee = tokens_fee.checked_add(fee_part).ok_or(error!(ErrorCode::Overflow))?;
                     msg!("Atellix: Filling - {} @ {}", tokens_to_fill.to_string(), posted_price.to_string());
                     if !inp_preview {
@@ -2719,6 +2841,7 @@ pub mod aqua_dex {
                             Side::Ask as u8,
                             tokens_to_fill,
                             posted_price,
+                            rebate_part,
                             fee_part,
                             clock_ts
                         )?;
@@ -2729,16 +2852,23 @@ pub mod aqua_dex {
                         state_upd.last_price = posted_price;
                         state_upd.last_ts = clock_ts;
                         log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &posted_node.owner(), true, tokens_to_fill)?;
+                        if rebate_part > 0 {
+                            state_upd.prc_order_balance = state_upd.prc_order_balance.checked_add(rebate_part).ok_or(error!(ErrorCode::Overflow))?;
+                            log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &posted_node.owner(), false, rebate_part)?;
+                        }
                     }
                     break;
                 }
             } else {
                 // Fill until price
-                let posted_part = scale_price(posted_qty, posted_price, mkt_decimal_factor)?;
+                let posted_part = scale_price(posted_qty, posted_price, decimal_factor(market.mkt_decimals))?;
                 if posted_part == price_to_fill {         // Match the entire order exactly
                     tokens_filled = tokens_filled.checked_add(posted_qty).ok_or(error!(ErrorCode::Overflow))?;
                     tokens_received = tokens_received.checked_add(posted_part).ok_or(error!(ErrorCode::Overflow))?;
+                    let rebate_part = calculate_fee(market.maker_rebate, posted_part)?;
                     let fee_part = calculate_fee(market.taker_fee, posted_part)?;
+                    require!(fee_part >= rebate_part, ErrorCode::RebateExceedsFee);
+                    tokens_rebate = tokens_rebate.checked_add(rebate_part).ok_or(error!(ErrorCode::Overflow))?;
                     tokens_fee = tokens_fee.checked_add(fee_part).ok_or(error!(ErrorCode::Overflow))?;
                     msg!("Atellix: Filling - {} @ {}", posted_qty.to_string(), posted_price.to_string());
                     if !inp_preview {
@@ -2753,6 +2883,7 @@ pub mod aqua_dex {
                             Side::Ask as u8,
                             posted_qty,
                             posted_price,
+                            rebate_part,
                             fee_part,
                             clock_ts
                         )?;
@@ -2764,13 +2895,20 @@ pub mod aqua_dex {
                         state_upd.last_price = posted_price;
                         state_upd.last_ts = clock_ts;
                         log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &posted_node.owner(), true, posted_qty)?;
+                        if rebate_part > 0 {
+                            state_upd.prc_order_balance = state_upd.prc_order_balance.checked_add(rebate_part).ok_or(error!(ErrorCode::Overflow))?;
+                            log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &posted_node.owner(), false, rebate_part)?;
+                        }
                     }
                     break;
                 } else if posted_part < price_to_fill {   // Match the entire order and continue
                     price_to_fill = price_to_fill.checked_sub(posted_part).ok_or(error!(ErrorCode::Overflow))?;
                     tokens_filled = tokens_filled.checked_add(posted_qty).ok_or(error!(ErrorCode::Overflow))?;
                     tokens_received = tokens_received.checked_add(posted_part).ok_or(error!(ErrorCode::Overflow))?;
+                    let rebate_part = calculate_fee(market.maker_rebate, posted_part)?;
                     let fee_part = calculate_fee(market.taker_fee, posted_part)?;
+                    require!(fee_part >= rebate_part, ErrorCode::RebateExceedsFee);
+                    tokens_rebate = tokens_rebate.checked_add(rebate_part).ok_or(error!(ErrorCode::Overflow))?;
                     tokens_fee = tokens_fee.checked_add(fee_part).ok_or(error!(ErrorCode::Overflow))?;
                     msg!("Atellix: Filling - {} @ {}", posted_qty.to_string(), posted_price.to_string());
                     if !inp_preview {
@@ -2785,6 +2923,7 @@ pub mod aqua_dex {
                             Side::Ask as u8,
                             posted_qty,
                             posted_price,
+                            rebate_part,
                             fee_part,
                             clock_ts
                         )?;
@@ -2796,12 +2935,19 @@ pub mod aqua_dex {
                         state_upd.last_price = posted_price;
                         state_upd.last_ts = clock_ts;
                         log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &posted_node.owner(), true, posted_qty)?;
+                        if rebate_part > 0 {
+                            state_upd.prc_order_balance = state_upd.prc_order_balance.checked_add(rebate_part).ok_or(error!(ErrorCode::Overflow))?;
+                            log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &posted_node.owner(), false, rebate_part)?;
+                        }
                     }
                 } else if posted_part > price_to_fill {   // Match part of the order
-                    let fill_amount = fill_quantity(price_to_fill, posted_price, mkt_decimal_factor)?;
+                    let fill_amount = fill_quantity(price_to_fill, posted_price, decimal_factor(market.mkt_decimals))?;
                     tokens_filled = tokens_filled.checked_add(fill_amount).ok_or(error!(ErrorCode::Overflow))?;
                     tokens_received = tokens_received.checked_add(price_to_fill).ok_or(error!(ErrorCode::Overflow))?;
+                    let rebate_part = calculate_fee(market.maker_rebate, price_to_fill)?;
                     let fee_part = calculate_fee(market.taker_fee, price_to_fill)?;
+                    require!(fee_part >= rebate_part, ErrorCode::RebateExceedsFee);
+                    tokens_rebate = tokens_rebate.checked_add(rebate_part).ok_or(error!(ErrorCode::Overflow))?;
                     tokens_fee = tokens_fee.checked_add(fee_part).ok_or(error!(ErrorCode::Overflow))?;
                     msg!("Atellix: Filling - {} @ {}", fill_amount.to_string(), posted_price.to_string());
                     if !inp_preview {
@@ -2816,6 +2962,7 @@ pub mod aqua_dex {
                             Side::Ask as u8,
                             fill_amount,
                             posted_price,
+                            rebate_part,
                             fee_part,
                             clock_ts
                         )?;
@@ -2826,6 +2973,10 @@ pub mod aqua_dex {
                         state_upd.last_price = posted_price;
                         state_upd.last_ts = clock_ts;
                         log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &posted_node.owner(), true, fill_amount)?;
+                        if rebate_part > 0 {
+                            state_upd.prc_order_balance = state_upd.prc_order_balance.checked_add(rebate_part).ok_or(error!(ErrorCode::Overflow))?;
+                            log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &posted_node.owner(), false, rebate_part)?;
+                        }
                     }
                     break;
                 }
@@ -2851,7 +3002,7 @@ pub mod aqua_dex {
                     Order::price(expire_leaf.key()).to_string(),
                 );
                 let expire_price = Order::price(expire_leaf.key());
-                let expire_total = scale_price(expire_amount, expire_price, mkt_decimal_factor)?;
+                let expire_total = scale_price(expire_amount, expire_price, decimal_factor(market.mkt_decimals))?;
                 emit!(ExpireEvent {
                     event_type: 16332991664789055110548783525139174482, // solana/program/aqua-dex/expire_event
                     action_id: state_upd.action_counter,
@@ -2913,6 +3064,7 @@ pub mod aqua_dex {
                 // Apply fees
                 state_upd.prc_vault_balance = state_upd.prc_vault_balance.checked_add(tokens_fee).ok_or(error!(ErrorCode::Overflow))?;
                 state_upd.prc_fees_balance = state_upd.prc_fees_balance.checked_add(tokens_fee).ok_or(error!(ErrorCode::Overflow))?;
+                state_upd.prc_fees_balance = state_upd.prc_fees_balance.checked_sub(tokens_rebate).ok_or(error!(ErrorCode::Overflow))?;
 
                 //msg!("Atellix: Pricing Token Vault Withdraw: {}", tokens_received.to_string());
                 /*msg!("Atellix: Pricing Token Vault Balance: {} (Orderbook: {})",
@@ -3020,9 +3172,7 @@ pub mod aqua_dex {
         let order_qty = order.amount();
         let tokens_out = match side {
             Side::Bid => {
-                let mkt_decimal_base: u64 = 10;
-                let mkt_decimal_factor: u64 = mkt_decimal_base.pow(market.mkt_decimals as u32);
-                let total = scale_price(order_qty, order_price, mkt_decimal_factor)?;
+                let total = scale_price(order_qty, order_price, decimal_factor(market.mkt_decimals))?;
                 result.set_prc_tokens(total);
                 state.prc_vault_balance = state.prc_vault_balance.checked_sub(total).ok_or(error!(ErrorCode::Overflow))?;
                 state.prc_order_balance = state.prc_order_balance.checked_sub(total).ok_or(error!(ErrorCode::Overflow))?;
@@ -3264,9 +3414,7 @@ pub mod aqua_dex {
             let order_qty = order.amount();
             let tokens = match side {
                 Side::Bid => {
-                    let mkt_decimal_base: u64 = 10;
-                    let mkt_decimal_factor: u64 = mkt_decimal_base.pow(market.mkt_decimals as u32);
-                    let total = scale_price(order_qty, order_price, mkt_decimal_factor)?;
+                    let total = scale_price(order_qty, order_price, decimal_factor(market.mkt_decimals))?;
                     log_settlement(&market.key(), state_upd, acc_settle1, acc_settle2, &order_owner, false, total)?;
                     state_upd.active_bid = state_upd.active_bid.checked_sub(1).ok_or(error!(ErrorCode::Overflow))?;
                     total
@@ -3368,9 +3516,7 @@ pub mod aqua_dex {
         let order_qty = order.amount();
         let tokens_out = match side {
             Side::Bid => {
-                let mkt_decimal_base: u64 = 10;
-                let mkt_decimal_factor: u64 = mkt_decimal_base.pow(market.mkt_decimals as u32);
-                let total = scale_price(order_qty, order_price, mkt_decimal_factor)?;
+                let total = scale_price(order_qty, order_price, decimal_factor(market.mkt_decimals))?;
                 result.set_prc_tokens(total);
                 log_settlement(&market.key(), state, acc_settle1, acc_settle2, &order_owner, false, total)?;
                 state.active_bid = state.active_bid.checked_sub(1).ok_or(error!(ErrorCode::Overflow))?;
@@ -3631,6 +3777,7 @@ pub mod aqua_dex {
         let fee_tokens = state.prc_fees_balance;
         if fee_tokens > 0 {
             state.action_counter = state.action_counter.checked_add(1).ok_or(error!(ErrorCode::Overflow))?;
+            state.prc_vault_balance = state.prc_vault_balance.checked_sub(fee_tokens).ok_or(error!(ErrorCode::Overflow))?;
             state.prc_fees_balance = 0;
 
             let seeds = &[market.to_account_info().key.as_ref(), &[market.agent_nonce]];
@@ -3665,6 +3812,7 @@ pub mod aqua_dex {
         inp_expire_min: i64,
         inp_min_quantity: u64,
         inp_taker_fee: u32,
+        inp_maker_rebate: u32,
         inp_log_fee: u64,
         inp_log_rebate: u64,
         inp_log_reimburse: u64,
@@ -3683,6 +3831,7 @@ pub mod aqua_dex {
         market.expire_min = inp_expire_min;
         market.min_quantity = inp_min_quantity;
         market.taker_fee = inp_taker_fee;
+        market.maker_rebate = inp_maker_rebate;
         market.log_fee = inp_log_fee;
         market.log_rebate = inp_log_rebate;
         market.log_reimburse = inp_log_reimburse;
@@ -4524,6 +4673,7 @@ pub struct Market {
     pub log_rebate: u64,                // Rebate for withdrawal (lamports)
     pub log_reimburse: u64,             // Reimbursement for adding a new settlement log (lamports)
     pub taker_fee: u32,                 // Taker commission fee
+    pub maker_rebate: u32,              // Maker commission rebate
     pub state: Pubkey,                  // Market statistics (frequently updated market details)
     pub trade_log: Pubkey,              // Trade log
     pub agent: Pubkey,                  // Program derived address for signing transfers
@@ -4531,12 +4681,10 @@ pub struct Market {
     pub manager: Pubkey,                // Market manager
     pub mkt_mint: Pubkey,               // Token mint for market tokens (Token A)
     pub mkt_vault: Pubkey,              // Vault for Token A (an associated token account controlled by this program)
-    pub mkt_nonce: u8,                  // Vault nonce for Token A
     pub mkt_decimals: u8,               // Token A decimals
     pub mkt_mint_type: u8,              // Token A mint type
     pub prc_mint: Pubkey,               // Token mint for pricing tokens (Token B)
     pub prc_vault: Pubkey,              // Vault for Token B
-    pub prc_nonce: u8,                  // Vault nonce for Token B
     pub prc_decimals: u8,               // Token B decimals
     pub prc_mint_type: u8,              // Token B mint type
     pub orders: Pubkey,                 // Orderbook Bid/Ask entries
@@ -4664,6 +4812,7 @@ pub struct MatchEvent {
     pub market: Pubkey,
     pub maker_order_id: u128,
     pub maker_filled: bool,
+    pub maker_rebate: u64,
     pub maker: Pubkey,
     pub taker: Pubkey,
     pub taker_side: u8,
@@ -4815,6 +4964,8 @@ pub enum ErrorCode {
     OrderbookFull,
     #[msg("Settlement log account does not match market, please update market data and retry")]
     RetrySettlementAccount,
+    #[msg("Rebate exceeds fee")]
+    RebateExceedsFee,
     #[msg("Quantity below minimum")]
     QuantityBelowMinimum,
     #[msg("Overflow")]
