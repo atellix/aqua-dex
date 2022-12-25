@@ -805,14 +805,14 @@ checksum = "3ead5388e485d38e622630c6b05afd3761a6701ff15c55b279ea5b31dcb62cff"
 
 [[package]]
 name = "net-authority"
-version = "0.1.0"
-source = "git+https://github.com/atellix/security-token#5ef52716999df92ab9b65dfbc75a9e86bd4ccf7d"
+version = "1.0.0"
+source = "git+https://github.com/atellix/net-authority?branch=token-auth#ab4f30244a1fc5d2208af5c12e78aa21673efab2"
 dependencies = [
  "anchor-lang",
  "byte-slice-cast",
  "bytemuck",
  "num_enum",
- "slab-alloc 1.0.0",
+ "slab-alloc 1.0.1",
  "solana-program",
  "uuid",
 ]
@@ -1095,8 +1095,8 @@ checksum = "d29ab0c6d3fc0ee92fe66e2d99f700eab17a8d57d1c1d3b748380fb20baa78cd"
 
 [[package]]
 name = "security-token"
-version = "0.1.0"
-source = "git+https://github.com/atellix/security-token#5ef52716999df92ab9b65dfbc75a9e86bd4ccf7d"
+version = "1.0.2"
+source = "git+https://github.com/atellix/security-token#e78c15ac80feb4cadbf8085cbdde08d36e47e654"
 dependencies = [
  "anchor-lang",
  "net-authority",
@@ -1195,8 +1195,8 @@ dependencies = [
 
 [[package]]
 name = "slab-alloc"
-version = "1.0.0"
-source = "git+https://github.com/atellix/security-token#5ef52716999df92ab9b65dfbc75a9e86bd4ccf7d"
+version = "1.0.1"
+source = "git+https://github.com/atellix/slab-alloc?branch=net-authority#54e09b99ac5bf8aff1ca593eff17b5b0b3da592d"
 dependencies = [
  "arrayref",
  "bytemuck",

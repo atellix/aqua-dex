@@ -1,7 +1,7 @@
 const { Buffer } = require('buffer')
 const { DateTime } = require("luxon")
 const { v4: uuidv4, parse: uuidparse } = require('uuid')
-const { PublicKey, Keypair, SystemProgram, SYSVAR_RENT_PUBKEY } = require('@solana/web3.js')
+const { ComputeBudgetProgram, PublicKey, Keypair, SystemProgram, SYSVAR_RENT_PUBKEY } = require('@solana/web3.js')
 const { TOKEN_PROGRAM_ID, Token } = require('@solana/spl-token')
 const { promisify } = require('util')
 const exec = promisify(require('child_process').exec)
@@ -165,6 +165,7 @@ async function limitOrder(orderType, user, result, qty, price, preview) {
     var rollover = false
     var signers = [user, result]
     var tx = new anchor.web3.Transaction()
+    tx.add(ComputeBudgetProgram.setComputeUnitLimit({units: 1000000}))
     if (mktState.logRollover) {
         console.log("--- PERFORMING SETTLEMENT LOG ROLLOVER ---")
         rollover = true
