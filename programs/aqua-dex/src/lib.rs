@@ -1,6 +1,6 @@
 use crate::program::AquaDex;
 #[cfg(not(feature = "no-entrypoint"))]
-use {default_env::default_env, solana_security_txt::security_txt};
+use solana_security_txt::security_txt;
 use std::{ io::Cursor, string::String, result::Result as FnResult, mem::size_of, convert::TryFrom };
 use bytemuck::{ Pod, Zeroable, cast_slice_mut, cast_slice };
 use num_enum::{ TryFromPrimitive, IntoPrimitive };
@@ -5019,9 +5019,11 @@ pub enum ErrorCode {
 
 #[cfg(not(feature = "no-entrypoint"))]
 security_txt! {
-    // Required fields
-    name: "Example",
-    project_url: "http://example.com",
-    contacts: "email:example@example.com,link:https://example.com/security,discord:example#1234",
+    name: "Atellix AquaDEX",
+    project_url: "https://atellix.com",
+    contacts: "email:mfrager@atellix.net,link:https://github.com/atellix/aqua-dex/security/policy,discord:mfrager#3430",
     policy: "https://github.com/atellix/aqua-dex/blob/master/SECURITY.md",
+    preferred_languages: "en",
+    source_code: "https://github.com/atellix/aqua-dex",
+    auditors: "None",
 }

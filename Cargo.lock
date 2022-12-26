@@ -209,6 +209,7 @@ dependencies = [
  "security-token",
  "slab-alloc 1.0.6",
  "solana-program",
+ "solana-security-txt",
 ]
 
 [[package]]
@@ -1315,6 +1316,12 @@ dependencies = [
  "rustversion",
  "syn",
 ]
+
+[[package]]
+name = "solana-security-txt"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7e0461f3afb29d8591300b3dd09b5472b3772d65688a2826ad960b8c0d5fa605"
 
 [[package]]
 name = "spl-associated-token-account"
