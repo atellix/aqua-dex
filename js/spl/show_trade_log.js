@@ -58,9 +58,11 @@ function decodeTradeLogVec(pageTableEntry, pages) {
         lo.nu64('price'),
         lo.ns64('ts'),
     ])
+    console.log(pageTableEntry)
     const instPerPage = Math.floor((16384 - (headerSize + offsetSize)) / stLogEntry.span)
     const stSlabVec = lo.struct([
-        lo.blob(offsetSize),
+        lo.blob(offsetSize, 'offset'),
+        lo.blob(32, 'market'),
         lo.nu64('trade_count'),
         lo.nu64('entry_max'),
         lo.seq(stLogEntry, instPerPage, 'logs'),
@@ -80,6 +82,7 @@ function decodeTradeLogVec(pageTableEntry, pages) {
     for (var i = 0; i < vecPages.length; i++) {
         var res = stSlabVec.decode(vecPages[i])
         if (i === 0) {
+            logSpec['market'] = new PublicKey(res['market']).toString()
             logSpec['trade_count'] = res['trade_count']
             logSpec['entry_max'] = res['entry_max']
         }
@@ -108,12 +111,12 @@ function decodeTradeLog(data) {
         lo.nu64('header_size'),
         lo.nu64('offset_size'),
         lo.nu64('alloc_items'),
-        lo.seq(lo.u16('page_index'), 128, 'alloc_pages'), // TYPE_MAX_PAGES
+        lo.seq(lo.u16('page_index'), 16, 'alloc_pages'), // TYPE_MAX_PAGES
     ]);
     const stSlabAlloc = lo.struct([
         lo.u16('top_unused_page'),
-        lo.seq(stTypedPage, 16, 'type_page'), // TYPE_MAX
-        lo.seq(lo.blob(16384), 4, 'pages'), // PAGE_SIZE
+        lo.seq(stTypedPage, 4, 'type_page'), // TYPE_MAX
+        lo.seq(lo.blob(16384), 1, 'pages'), // PAGE_SIZE
     ]);
     var res = stSlabAlloc.decode(data)
     //console.log(JSON.stringify(res['type_page']))

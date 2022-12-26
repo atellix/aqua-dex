@@ -24,3 +24,4 @@ num_enum = "0.5.4"
 byte-slice-cast = "1.0.0"
 slab-alloc = { version = "1.0.0", git = "https://github.com/atellix/slab-alloc", branch = "aqua-dex" }
 security-token = { version = "1.0.2", git = "https://github.com/atellix/security-token", features = ["cpi"] }
+solana-security-txt = "1.1.0"
