@@ -1,7 +1,7 @@
 const { Buffer } = require('buffer')
 const { DateTime } = require("luxon")
 const { v4: uuidv4, parse: uuidparse } = require('uuid')
-const { PublicKey, Keypair, SystemProgram, SYSVAR_RENT_PUBKEY } = require('@solana/web3.js')
+const { ComputeBudgetProgram, PublicKey, Keypair, SystemProgram, SYSVAR_RENT_PUBKEY } = require('@solana/web3.js')
 const { TOKEN_PROGRAM_ID } = require('@solana/spl-token')
 const { promisify } = require('util')
 const exec = promisify(require('child_process').exec)
@@ -52,7 +52,7 @@ async function main() {
     var mint1 = await createTokenMint()
     //var mint2 = await createTokenMint()
     var mint1 = 'So11111111111111111111111111111111111111112'
-    var mint2 = 'USDVXgXZcQWycX4PAu2CZbGaSG1Ft5rNjo4ARpoqw7w'
+    var mint2 = 'Gh9ZwEmdLJ8DscKNTkTqPbNwLNNBjuSzaG9Vp2KGtKJr'
     console.log("Mints: " + mint1 + " " + mint2)
     const tokenMint1 = new PublicKey(mint1)
     const tokenMint2 = new PublicKey(mint2)
@@ -176,6 +176,7 @@ async function main() {
         sysProg: SystemProgram.programId.toString(),
         sysRent: SYSVAR_RENT_PUBKEY.toString(),
     })
+    tx.add(ComputeBudgetProgram.setComputeUnitLimit({units: 1000000}))
     tx.add(aquadex.instruction.createMarket(
         marketAgent.nonce,
         tokenVault1.nonce,

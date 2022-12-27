@@ -96,7 +96,7 @@ async function createTokenMint() {
 async function main() {
     var ndjs
     try {
-        ndjs = await fs.readFile('market_wsol_usdc_1.json')
+        ndjs = await fs.readFile('market_1.json')
     } catch (error) {
         console.error('File Error: ', error)
     }

@@ -299,6 +299,12 @@ pub struct TradeEntry {
 unsafe impl Zeroable for TradeEntry {}
 unsafe impl Pod for TradeEntry {}
 
+fn full_account_zero(account: &AccountInfo) -> bool {
+    let data = account.try_borrow_data().unwrap();
+    let (prefix, aligned, suffix) = unsafe { data.align_to::<u128>() };
+    prefix.iter().all(|&x| x == 0) && suffix.iter().all(|&x| x == 0) && aligned.iter().all(|&x| x == 0)
+}
+
 fn map_datatype(data_type: DT) -> u16 {
     match data_type {
         DT::BidOrder => OrderDT::BidOrderMap as u16,
@@ -463,17 +469,6 @@ fn verify_matching_accounts(left: &Pubkey, right: &Pubkey, error_msg: Option<Str
     Ok(())
 }
 
-fn verify_settlement_log(
-    market_key: &Pubkey, 
-    settle: &AccountInfo,
-) -> anchor_lang::Result<()> {
-    let log_data: &[u8] = &settle.try_borrow_data()?;
-    let (header, _page_table) = array_refs![log_data, size_of::<AccountsHeader>(); .. ;];
-    let settle_header: &[AccountsHeader] = cast_slice(header);
-    verify_matching_accounts(&settle_header[0].market, market_key, Some(String::from("Invalid market for settlement log")))?;
-    Ok(())
-}
-
 fn settle_account(settle: &AccountInfo, owner_id: u128, owner: &Pubkey, mkt_token: bool, amount: u64) -> FnResult<u64, Error> {
     let clock = Clock::get()?;
     let clock_ts = clock.unix_timestamp;
@@ -612,6 +607,11 @@ fn log_rollover(
     let (prev_top, _prev_pages) = mut_array_refs![prev_data, size_of::<AccountsHeader>(); .. ;];
     let prev_header: &mut [AccountsHeader] = cast_slice_mut(prev_top);
     prev_header[0].set_next(settle_n.key);
+
+    // Ensure the new settlement log is completely empty
+    if !full_account_zero(&settle_n) {
+        return Err(error!(ErrorCode::InvalidAccount));
+    }
 
     let settle_data: &mut[u8] = &mut settle_n.try_borrow_mut_data()?;
     let (settle_top, settle_pages) = mut_array_refs![settle_data, size_of::<AccountsHeader>(); .. ;];
@@ -1211,7 +1211,6 @@ pub mod aqua_dex {
         store_struct::<Market>(&market, acc_market)?;
 
         let state = MarketState {
-            market: *acc_market.key,
             settle_a: *acc_settle1.key,
             settle_b: *acc_settle2.key,
             log_rollover: false,
@@ -1335,7 +1334,6 @@ pub mod aqua_dex {
         verify_matching_accounts(&market.mkt_vault, &acc_mkt_vault.key, Some(String::from("Invalid market token vault")))?;
         verify_matching_accounts(&market.prc_vault, &acc_prc_vault.key, Some(String::from("Invalid pricing token vault")))?;
         verify_matching_accounts(&market.orders, &acc_orders.key, Some(String::from("Invalid orderbook")))?;
-        verify_matching_accounts(&market_state.market, &market.key(), Some(String::from("Invalid market for state")))?;
 
         let s1 = verify_matching_accounts(&market_state.settle_a, &acc_settle1.key, Some(String::from("Settlement log 1")));
         let s2 = verify_matching_accounts(&market_state.settle_b, &acc_settle2.key, Some(String::from("Settlement log 2")));
@@ -1345,8 +1343,6 @@ pub mod aqua_dex {
             msg!("Please update market data and retry");
             return Err(ErrorCode::RetrySettlementAccount.into());
         }
-        verify_settlement_log(&market.key(), &acc_settle1)?;
-        verify_settlement_log(&market.key(), &acc_settle2)?;
 
         // Append a settlement log account
         let state_upd = &mut ctx.accounts.state;
@@ -1774,7 +1770,6 @@ pub mod aqua_dex {
         verify_matching_accounts(&market.mkt_vault, &acc_mkt_vault.key, Some(String::from("Invalid market token vault")))?;
         verify_matching_accounts(&market.prc_vault, &acc_prc_vault.key, Some(String::from("Invalid pricing token vault")))?;
         verify_matching_accounts(&market.orders, &acc_orders.key, Some(String::from("Invalid orderbook")))?;
-        verify_matching_accounts(&market_state.market, &market.key(), Some(String::from("Invalid market for state")))?;
 
         let s1 = verify_matching_accounts(&market_state.settle_a, &acc_settle1.key, Some(String::from("Settlement log 1")));
         let s2 = verify_matching_accounts(&market_state.settle_b, &acc_settle2.key, Some(String::from("Settlement log 2")));
@@ -1784,8 +1779,6 @@ pub mod aqua_dex {
             msg!("Please update market data and retry");
             return Err(ErrorCode::RetrySettlementAccount.into()); 
         }
-        verify_settlement_log(&market.key(), &acc_settle1)?;
-        verify_settlement_log(&market.key(), &acc_settle2)?;
 
         // Append a settlement log account
         let state_upd = &mut ctx.accounts.state;
@@ -2202,7 +2195,6 @@ pub mod aqua_dex {
         verify_matching_accounts(&market.mkt_vault, &acc_mkt_vault.key, Some(String::from("Invalid market token vault")))?;
         verify_matching_accounts(&market.prc_vault, &acc_prc_vault.key, Some(String::from("Invalid pricing token vault")))?;
         verify_matching_accounts(&market.orders, &acc_orders.key, Some(String::from("Invalid orderbook")))?;
-        verify_matching_accounts(&market_state.market, &market.key(), Some(String::from("Invalid market for state")))?;
 
         let s1 = verify_matching_accounts(&market_state.settle_a, &acc_settle1.key, Some(String::from("Settlement log 1")));
         let s2 = verify_matching_accounts(&market_state.settle_b, &acc_settle2.key, Some(String::from("Settlement log 2")));
@@ -2212,8 +2204,6 @@ pub mod aqua_dex {
             msg!("Please update market data and retry");
             return Err(ErrorCode::RetrySettlementAccount.into());
         }
-        verify_settlement_log(&market.key(), &acc_settle1)?;
-        verify_settlement_log(&market.key(), &acc_settle2)?;
 
         // Append a settlement log account
         let state_upd = &mut ctx.accounts.state;
@@ -2699,7 +2689,6 @@ pub mod aqua_dex {
         verify_matching_accounts(&market.mkt_vault, &acc_mkt_vault.key, Some(String::from("Invalid market token vault")))?;
         verify_matching_accounts(&market.prc_vault, &acc_prc_vault.key, Some(String::from("Invalid pricing token vault")))?;
         verify_matching_accounts(&market.orders, &acc_orders.key, Some(String::from("Invalid orderbook")))?;
-        verify_matching_accounts(&market_state.market, &market.key(), Some(String::from("Invalid market for state")))?;
 
         let s1 = verify_matching_accounts(&market_state.settle_a, &acc_settle1.key, Some(String::from("Settlement log 1")));
         let s2 = verify_matching_accounts(&market_state.settle_b, &acc_settle2.key, Some(String::from("Settlement log 2")));
@@ -2709,8 +2698,6 @@ pub mod aqua_dex {
             msg!("Please update market data and retry");
             return Err(ErrorCode::RetrySettlementAccount.into()); 
         }
-        verify_settlement_log(&market.key(), &acc_settle1)?;
-        verify_settlement_log(&market.key(), &acc_settle2)?;
 
         // Append a settlement log account
         let state_upd = &mut ctx.accounts.state;
@@ -3167,7 +3154,6 @@ pub mod aqua_dex {
         verify_matching_accounts(&market.mkt_vault, &acc_mkt_vault.key, Some(String::from("Invalid market token vault")))?;
         verify_matching_accounts(&market.prc_vault, &acc_prc_vault.key, Some(String::from("Invalid pricing token vault")))?;
         verify_matching_accounts(&market.orders, &acc_orders.key, Some(String::from("Invalid orderbook")))?;
-        verify_matching_accounts(&market_state.market, &market.key(), Some(String::from("Invalid market for state")))?;
 
         let side = Side::try_from(inp_side).or(Err(error!(ErrorCode::InvalidParameters)))?;
         let order_data: &mut[u8] = &mut acc_orders.try_borrow_mut_data()?;
@@ -3395,7 +3381,6 @@ pub mod aqua_dex {
 
         verify_matching_accounts(&market.state, &market_state.key(), Some(String::from("Invalid market state")))?;
         verify_matching_accounts(&market.orders, &acc_orders.key, Some(String::from("Invalid orderbook")))?;
-        verify_matching_accounts(&market_state.market, &market.key(), Some(String::from("Invalid market for state")))?;
 
         let s1 = verify_matching_accounts(&market_state.settle_a, &acc_settle1.key, Some(String::from("Settlement log 1")));
         let s2 = verify_matching_accounts(&market_state.settle_b, &acc_settle2.key, Some(String::from("Settlement log 2")));
@@ -3405,8 +3390,6 @@ pub mod aqua_dex {
             msg!("Please update market data and retry");
             return Err(ErrorCode::RetrySettlementAccount.into()); 
         }
-        verify_settlement_log(&market.key(), &acc_settle1)?;
-        verify_settlement_log(&market.key(), &acc_settle2)?;
 
         // Append a settlement log account
         let state_upd = &mut ctx.accounts.state;
@@ -3503,7 +3486,6 @@ pub mod aqua_dex {
         }
         verify_matching_accounts(&market.state, &market_state.key(), Some(String::from("Invalid market state")))?;
         verify_matching_accounts(&market.orders, &acc_orders.key, Some(String::from("Invalid orderbook")))?;
-        verify_matching_accounts(&market_state.market, &market.key(), Some(String::from("Invalid market for state")))?;
 
         let s1 = verify_matching_accounts(&market_state.settle_a, &acc_settle1.key, Some(String::from("Settlement log 1")));
         let s2 = verify_matching_accounts(&market_state.settle_b, &acc_settle2.key, Some(String::from("Settlement log 2")));
@@ -3513,8 +3495,6 @@ pub mod aqua_dex {
             msg!("Please update market data and retry");
             return Err(ErrorCode::RetrySettlementAccount.into()); 
         }
-        verify_settlement_log(&market.key(), &acc_settle1)?;
-        verify_settlement_log(&market.key(), &acc_settle2)?;
 
         // Append a settlement log account
         let state_upd = &mut ctx.accounts.state;
@@ -3602,7 +3582,6 @@ pub mod aqua_dex {
 
         // Verify 
         verify_matching_accounts(&market.state, &market_state.key(), Some(String::from("Invalid market state")))?;
-        verify_matching_accounts(&market_state.market, &market.key(), Some(String::from("Invalid market for state")))?;
 
         let s2 = verify_matching_accounts(&market_state.settle_b, &acc_settle.key, Some(String::from("Settlement log 2")));
         if s2.is_err() {
@@ -3611,7 +3590,6 @@ pub mod aqua_dex {
             msg!("Please update market data and retry");
             return Err(ErrorCode::RetrySettlementAccount.into());
         }
-        verify_settlement_log(&market.key(), &acc_settle)?;
 
         // Append a settlement log account
         let state_upd = &mut ctx.accounts.state;
@@ -3659,7 +3637,6 @@ pub mod aqua_dex {
         verify_matching_accounts(&market.agent, &acc_agent.key, Some(String::from("Invalid market agent")))?;
         verify_matching_accounts(&market.mkt_vault, &acc_mkt_vault.key, Some(String::from("Invalid market token vault")))?;
         verify_matching_accounts(&market.prc_vault, &acc_prc_vault.key, Some(String::from("Invalid pricing token vault")))?;
-        verify_matching_accounts(&state.market, &market.key(), Some(String::from("Invalid market for state")))?;
 
         state.action_counter = state.action_counter.checked_add(1).ok_or(error!(ErrorCode::Overflow))?;
 
@@ -3812,7 +3789,6 @@ pub mod aqua_dex {
         verify_matching_accounts(&market.state, &state.key(), Some(String::from("Invalid market state")))?;
         verify_matching_accounts(&market.agent, &acc_agent.key, Some(String::from("Invalid market agent")))?;
         verify_matching_accounts(&market.prc_vault, &acc_prc_vault.key, Some(String::from("Invalid pricing token vault")))?;
-        verify_matching_accounts(&state.market, &market.key(), Some(String::from("Invalid market for state")))?;
 
         has_role(&acc_auth, Role::FeeManager, acc_manager.key)?;
 
@@ -3908,7 +3884,6 @@ pub mod aqua_dex {
             return Err(ErrorCode::AccessDenied.into());
         }
         verify_matching_accounts(&market.state, &state.key(), Some(String::from("Invalid market state")))?;
-        verify_matching_accounts(&state.market, &market.key(), Some(String::from("Invalid market for state")))?;
 
         if !vault.initialized { // Only initialize once
             vault.initialized = true;
@@ -3999,7 +3974,6 @@ pub mod aqua_dex {
         verify_matching_accounts(&market.agent, &acc_agent.key, Some(String::from("Invalid market agent")))?;
         verify_matching_accounts(&market.mkt_vault, &acc_mkt_vault.key, Some(String::from("Invalid market token vault")))?;
         verify_matching_accounts(&market.prc_vault, &acc_prc_vault.key, Some(String::from("Invalid pricing token vault")))?;
-        verify_matching_accounts(&state.market, &market.key(), Some(String::from("Invalid market for state")))?;
 
         if vault.mkt_tokens > 0 || vault.prc_tokens > 0 {
             state.action_counter = state.action_counter.checked_add(1).ok_or(error!(ErrorCode::Overflow))?;
@@ -4085,7 +4059,6 @@ pub mod aqua_dex {
         verify_matching_accounts(&market.agent, &acc_agent.key, Some(String::from("Invalid market agent")))?;
         verify_matching_accounts(&market.mkt_vault, &acc_mkt_vault.key, Some(String::from("Invalid market token vault")))?;
         verify_matching_accounts(&market.prc_vault, &acc_prc_vault.key, Some(String::from("Invalid pricing token vault")))?;
-        verify_matching_accounts(&state.market, &market.key(), Some(String::from("Invalid market for state")))?;
 
         if vault.mkt_tokens > 0 || vault.prc_tokens > 0 {
             state.action_counter = state.action_counter.checked_add(1).ok_or(error!(ErrorCode::Overflow))?;
@@ -4178,7 +4151,7 @@ pub struct Initialize<'info> {
     #[account(init, seeds = [program_id.as_ref()], bump, payer = program_admin, space = 40)]
     pub root_data: Account<'info, RootData>,
     /// CHECK: ok
-    #[account(zero)]
+    #[account(mut, constraint = full_account_zero(&auth_data))]
     pub auth_data: UncheckedAccount<'info>,
     #[account(constraint = program.programdata_address().unwrap() == Some(program_data.key()))]
     pub program: Program<'info, AquaDex>,
@@ -4264,16 +4237,16 @@ pub struct CreateMarket<'info> {
     #[account(mut)]
     pub prc_vault: AccountInfo<'info>,
     /// CHECK: ok
-    #[account(mut)]
+    #[account(mut, constraint = full_account_zero(&trade_log))]
     pub trade_log: AccountInfo<'info>,
     /// CHECK: ok
-    #[account(zero)]
+    #[account(mut, constraint = full_account_zero(&orders))]
     pub orders: AccountInfo<'info>,
     /// CHECK: ok
-    #[account(zero)]
+    #[account(mut, constraint = full_account_zero(&settle_a))]
     pub settle_a: AccountInfo<'info>,
     /// CHECK: ok
-    #[account(zero)]
+    #[account(mut, constraint = full_account_zero(&settle_b))]
     pub settle_b: AccountInfo<'info>,
     /// CHECK: ok
     #[account(address = token::ID)]
@@ -4687,7 +4660,7 @@ pub struct ExtendLog<'info> {
     #[account(mut, signer)]
     pub user: AccountInfo<'info>,
     /// CHECK: ok
-    #[account(mut)]
+    #[account(mut, constraint = full_account_zero(&settle))]
     pub settle: AccountInfo<'info>,
 }
 
@@ -4743,7 +4716,6 @@ pub struct MarketAdmin {
 
 #[account]
 pub struct MarketState {
-    pub market: Pubkey,                 // Market
     pub settle_a: Pubkey,               // Settlement log 1 (the active log)
     pub settle_b: Pubkey,               // Settlement log 2 (the next log)
     pub log_rollover: bool,             // Request for a new settlement log account for rollover
@@ -5021,9 +4993,9 @@ pub enum ErrorCode {
 security_txt! {
     name: "Atellix AquaDEX",
     project_url: "https://atellix.com",
-    contacts: "email:mfrager@atellix.net,link:https://github.com/atellix/aqua-dex/security/policy,discord:mfrager#3430",
-    policy: "https://github.com/atellix/aqua-dex/blob/master/SECURITY.md",
+    contacts: "email:mfrager@atellix.net,discord:mfrager#3430",
+    policy: "https://github.com/atellix/aqua-dex/security/policy",
     preferred_languages: "en",
     source_code: "https://github.com/atellix/aqua-dex",
-    auditors: "None",
+    auditors: "None"
 }
