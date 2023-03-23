@@ -863,6 +863,23 @@ fn log_trade(
     Ok(())
 }
 
+fn get_tick_price(market: &Market, price: u64) -> anchor_lang::Result<u64> {
+    let tick_decimals = market.tick_decimals;
+    if tick_decimals == 0 {
+        return Ok(price);
+    }
+    let decimal_base: u64 = 10;
+    let tick_size: u64 = decimal_base.pow(tick_decimals as u32);
+    let remainder = price.checked_rem(tick_size).ok_or(error!(ErrorCode::Overflow))?;
+    let midpoint = tick_size.checked_div(2).ok_or(error!(ErrorCode::Overflow))?;
+    let rounded_price = if remainder < midpoint {
+        price - remainder
+    } else {
+        price + (tick_size - remainder)
+    }; 
+    Ok(rounded_price)
+}
+
 #[program]
 pub mod aqua_dex {
     use super::*;
@@ -1025,6 +1042,7 @@ pub mod aqua_dex {
         inp_expire_enable: bool,
         inp_expire_min: i64,
         inp_min_quantity: u64,
+        inp_tick_decimals: u8,
         inp_taker_fee: u32,
         inp_maker_rebate: u32,
         inp_log_fee: u64,
@@ -1036,6 +1054,8 @@ pub mod aqua_dex {
         msg!("Begin Market Setup");
         let clock = Clock::get()?;
         let clock_ts = clock.unix_timestamp;
+
+        require!(inp_tick_decimals <= 16, ErrorCode::InvalidParameters);
 
         let acc_market = &ctx.accounts.market.to_account_info();
         let acc_state = &ctx.accounts.state.to_account_info();
@@ -1186,6 +1206,7 @@ pub mod aqua_dex {
             expire_enable: inp_expire_enable,
             expire_min: inp_expire_min,
             min_quantity: inp_min_quantity,
+            tick_decimals: inp_tick_decimals,
             log_fee: inp_log_fee,
             log_rebate: inp_log_rebate,
             log_reimburse: inp_log_reimburse,
@@ -1296,15 +1317,13 @@ pub mod aqua_dex {
 
     pub fn limit_bid<'a, 'b, 'c, 'info>(ctx: Context<'a, 'b, 'c, 'info, OrderContext<'info>>,
         inp_quantity: u64,
-        inp_price: u64,
+        inp_price_request: u64,
         inp_post: bool,     // Post the order order to the orderbook, otherwise fill based on parameter below
         inp_fill: bool,     // Require orders that are not posted to be filled completely
         inp_expires: i64,   // Unix timestamp for order expiration (must be in the future, must exceed minimum duration)
         inp_preview: bool,  // Preview execution and check taker token balance, but do not perform transfer
         inp_rollover: bool, // Perform settlement log rollover
     ) -> anchor_lang::Result<TradeResult> {
-        require!(inp_quantity > 0, ErrorCode::InvalidParameters);
-        require!(inp_price > 0, ErrorCode::InvalidParameters);
         let clock = Clock::get()?;
         let clock_ts = clock.unix_timestamp;
 
@@ -1327,7 +1346,11 @@ pub mod aqua_dex {
             msg!("Market closed");
             return Err(ErrorCode::MarketClosed.into());
         }
+
         require!(inp_quantity > 0 && inp_quantity >= market.min_quantity, ErrorCode::QuantityBelowMinimum);
+        require!(inp_price_request > 0, ErrorCode::InvalidParameters);
+        let inp_price = get_tick_price(&market, inp_price_request)?;
+        require!(inp_price > 0, ErrorCode::InvalidParameters);
 
         verify_matching_accounts(&market.state, &market_state.key(), Some(String::from("Invalid market state")))?;
         verify_matching_accounts(&market.agent, &acc_agent.key, Some(String::from("Invalid market agent")))?;
@@ -1732,15 +1755,13 @@ pub mod aqua_dex {
 
     pub fn limit_ask<'a, 'b, 'c, 'info>(ctx: Context<'a, 'b, 'c, 'info, OrderContext<'info>>,
         inp_quantity: u64,
-        inp_price: u64,
+        inp_price_request: u64,
         inp_post: bool,     // Post the order order to the orderbook, otherwise fill based on parameter below
         inp_fill: bool,     // Require orders that are not posted to be filled completely
         inp_expires: i64,   // Unix timestamp for order expiration (must be in the future, must exceed minimum duration)
         inp_preview: bool,  // Preview mode
         inp_rollover: bool, // Perform settlement log rollover
     ) -> anchor_lang::Result<TradeResult> {
-        require!(inp_quantity > 0, ErrorCode::InvalidParameters);
-        require!(inp_price > 0, ErrorCode::InvalidParameters);
         let clock = Clock::get()?;
         let clock_ts = clock.unix_timestamp;
 
@@ -1763,7 +1784,11 @@ pub mod aqua_dex {
             msg!("Market closed");
             return Err(ErrorCode::MarketClosed.into());
         }
+
         require!(inp_quantity > 0 && inp_quantity >= market.min_quantity, ErrorCode::QuantityBelowMinimum);
+        require!(inp_price_request > 0, ErrorCode::InvalidParameters);
+        let inp_price = get_tick_price(&market, inp_price_request)?;
+        require!(inp_price > 0, ErrorCode::InvalidParameters);
 
         verify_matching_accounts(&market.state, &market_state.key(), Some(String::from("Invalid market state")))?;
         verify_matching_accounts(&market.agent, &acc_agent.key, Some(String::from("Invalid market agent")))?;
@@ -4686,6 +4711,7 @@ pub struct Market {
     pub expire_enable: bool,            // Enable order expiration
     pub expire_min: i64,                // Minimum time an order must be posted before expiration
     pub min_quantity: u64,              // Minimum quantity to trade (0 for no minimum)
+    pub tick_decimals: u8,              // Tick size (powers of 10 in raw tokens)
     pub log_fee: u64,                   // Fee for settlement log space for posted orders (lamports)
     pub log_rebate: u64,                // Rebate for withdrawal (lamports)
     pub log_reimburse: u64,             // Reimbursement for adding a new settlement log (lamports)
