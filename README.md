@@ -211,24 +211,30 @@ Withdraw tokens from orders cleared by counter-parties.
 ## Trade tokens:
 ```javascript
 async function limitOrder(orderType, user, result, qty, price) {
-    var userToken1 = await associatedTokenAddress(user.publicKey, tokenMint1)
-    var userToken2 = await associatedTokenAddress(user.publicKey, tokenMint2)
-    var mktSpec = await aquadex.account.market.fetch(marketPK)
-    settle1PK = mktSpec.settleA
-    settle2PK = mktSpec.settleB
+
+    // Fetch up-to-date data (market data can be cached, state data should be reloaded)
+    var marketData = await aquadex.account.market.fetch(marketPK)
+    var stateData = await aquadex.account.market.fetch(marketData.state)
+
+    var settle1PK = stateData.settleA
+    var settle2PK = stateData.settleB
+    var userToken1 = await associatedTokenAddress(user.publicKey, marketData.mktMint)
+    var userToken2 = await associatedTokenAddress(user.publicKey, marketData.prcMint)
+
     var params = {
         accounts: {
             market: marketPK,
-            state: marketStatePK,
-            agent: new PublicKey(marketAgent.pubkey),
+            state: marketSpec.state,
+            agent: marketSpec.agent
+            tradeLog: marketSpec.tradeLog
             user: user.publicKey,
             userMktToken: new PublicKey(userToken1.pubkey),
             userPrcToken: new PublicKey(userToken2.pubkey),
-            mktVault: new PublicKey(tokenVault1.pubkey),
-            prcVault: new PublicKey(tokenVault2.pubkey),
-            orders: ordersPK,
-            settleA: settle1PK,
-            settleB: settle2PK,
+            mktVault: marketData.mktVault,
+            prcVault: marketData.prcVault,
+            orders: marketData.orders,
+            settleA: stateData.settleA,
+            settleB: stateData.settleB,
             result: result.publicKey,
             splTokenProg: TOKEN_PROGRAM_ID,
         },
@@ -237,10 +243,15 @@ async function limitOrder(orderType, user, result, qty, price) {
     var rollover = false
     var signers = [user, result]
     var tx = new anchor.web3.Transaction()
+
+    // Market roll-over will not happen if the settlement log is frequently cleared to "user vaults"
+
     if (mktSpec.logRollover) {
         console.log("--- PERFORMING SETTLEMENT LOG ROLLOVER ---")
         rollover = true
-        var settle = anchor.web3.Keypair.generate()
+        const settle = anchor.web3.Keypair.generate()
+        const settleBytes = 326 + (16384 * 6)
+        const settleRent = await provider.connection.getMinimumBalanceForRentExemption(settleBytes)
         signers.push(settle)
         tx.add(anchor.web3.SystemProgram.createAccount({
             fromPubkey: provider.wallet.publicKey,
@@ -255,25 +266,55 @@ async function limitOrder(orderType, user, result, qty, price) {
     }
     if (orderType === 'bid') {
         tx.add(await aquadex.instruction.limitBid(
-            rollover,                       // Rollover settlement log
-            new anchor.BN(qty * 10000),     // Quantity
-            new anchor.BN(price * 10000),   // Price
-            true,
-            false,
+            new anchor.BN(qty),             // Quantity
+            new anchor.BN(price),           // Price
+            true,                           // Post order
+            false,                          // Fill or cancel
             new anchor.BN(0),               // Order expiry
+            preview,                        // Preview
+            rollover,                       // Rollover settlement log
             params,
         ))
     } else {
         tx.add(await aquadex.instruction.limitAsk(
-            rollover,                       // Rollover settlement log
-            new anchor.BN(qty * 10000),     // Quantity
-            new anchor.BN(price * 10000),   // Price
-            true,
-            false,
+            new anchor.BN(qty),             // Quantity
+            new anchor.BN(price),           // Price
+            true,                           // Post order
+            false,                          // Fill or cancel
             new anchor.BN(0),               // Order expiry
+            preview,                        // Preview
+            rollover,                       // Rollover settlement log
             params,
         ))
     }
     await provider.send(tx, signers)
 }
+
+// Create temp account for optional result data
+
+var resultData = anchor.web3.Keypair.generate()
+var tx = new anchor.web3.Transaction()
+tx.add(
+    anchor.web3.SystemProgram.createAccount({
+        fromPubkey: provider.wallet.publicKey,
+        newAccountPubkey: resultData.publicKey,
+        space: tradeResultBytes,
+        lamports: tradeResultRent,
+        programId: aquadexPK
+    })
+)
+await provider.sendAndConfirm(tx, [resultData])
+
+// Perform a limit bid
+
+console.log('Bid')
+console.log(await limitOrder('bid', userWallet, resultData, qty.toFixed(0), price.toFixed(0), false))
+var res = await aquadex.account.tradeResult.fetch(resultData.publicKey)
+
+// Perform a limit ask
+
+console.log('Ask')
+console.log(await limitOrder('ask', userWallet, resultData, qty.toFixed(0), price.toFixed(0), false))
+var res = await aquadex.account.tradeResult.fetch(resultData.publicKey)
+
 ```
