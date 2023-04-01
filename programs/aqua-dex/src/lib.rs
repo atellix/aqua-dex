@@ -3854,6 +3854,7 @@ pub mod aqua_dex {
         inp_expire_enable: bool,
         inp_expire_min: i64,
         inp_min_quantity: u64,
+        inp_tick_decimals: u8,
         inp_taker_fee: u32,
         inp_maker_rebate: u32,
         inp_log_fee: u64,
@@ -3864,6 +3865,8 @@ pub mod aqua_dex {
         let market = &mut ctx.accounts.market;
         let acc_manager = &ctx.accounts.manager.to_account_info();
 
+        require!(inp_tick_decimals <= 16, ErrorCode::InvalidParameters);
+
         if market.manager != *acc_manager.key {
             msg!("Not manager");
             return Err(ErrorCode::AccessDenied.into());
@@ -3873,6 +3876,7 @@ pub mod aqua_dex {
         market.expire_enable = inp_expire_enable;
         market.expire_min = inp_expire_min;
         market.min_quantity = inp_min_quantity;
+        market.tick_decimals = inp_tick_decimals;
         market.taker_fee = inp_taker_fee;
         market.maker_rebate = inp_maker_rebate;
         market.log_fee = inp_log_fee;
