@@ -189,6 +189,7 @@ async function main() {
         true,                                   // Expire enable
         new anchor.BN(1),                       // Min expire
         new anchor.BN(0),                       // Min quantity
+        new anchor.BN(5),                       // Tick decimals (from right)
         new anchor.BN(3600),                    // Taker fee (X / 10,000,000; or 1,000 = 1 BPS)
         new anchor.BN(2500),                    // Maker rebate (X / 10,000,000; or 1,000 = 1 BPS)
         new anchor.BN(0),                       // Log fee (reserve space in settlement log)

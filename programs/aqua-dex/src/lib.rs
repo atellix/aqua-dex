@@ -900,8 +900,21 @@ pub mod aqua_dex {
     }
 
     // Remove before deployment
-    pub fn deactivate(_ctx: Context<Deactivate>) -> anchor_lang::Result<()> {
+    /*pub fn deactivate(_ctx: Context<Deactivate>) -> anchor_lang::Result<()> {
         msg!("Atellix: Deactivate");
+        Ok(())
+    }*/
+
+    // Program owner can close data accounts (for deprecated markets)
+    pub fn close_account(ctx: Context<CloseAccount>) -> anchor_lang::Result<()> {
+
+        // Move lamports from data_account to program_admin
+        let mut admin_lamports = ctx.accounts.program_admin.to_account_info().lamports();
+        admin_lamports = admin_lamports.checked_add(ctx.accounts.data_account.to_account_info().lamports()).ok_or(error!(ErrorCode::Overflow))?;
+        **ctx.accounts.program_admin.to_account_info().lamports.borrow_mut() = admin_lamports;
+        **ctx.accounts.data_account.to_account_info().lamports.borrow_mut() = 0;
+
+        msg!("Atellix: Close Account: {}", ctx.accounts.data_account.key().to_string());
         Ok(())
     }
 
@@ -1633,9 +1646,9 @@ pub mod aqua_dex {
                         }
                         let evict_node = map_min(ob, DT::BidOrder).unwrap();
                         let evict_order = ob.index::<Order>(OrderDT::BidOrder as u16, evict_node.slot() as usize);
-                        // Only evict if the price is better
-                        if inp_price <= Order::price(evict_node.key()) {
-                            msg!("Atellix: Orderbook Full - Price does not exceed evicted order");
+                        // Only evict if the price is better and quantity is equal or more
+                        if inp_price <= Order::price(evict_node.key()) || tokens_remaining < evict_order.amount() {
+                            msg!("Atellix: Orderbook Full - Price does not exceed evicted order or posted quantity less than evicted order");
                             return Err(ErrorCode::OrderbookFull.into());
                         }
                         let evict_amount: u64 = evict_order.amount();
@@ -2063,9 +2076,9 @@ pub mod aqua_dex {
                         }
                         let evict_node = map_max(ob, DT::AskOrder).unwrap();
                         let evict_order = ob.index::<Order>(OrderDT::AskOrder as u16, evict_node.slot() as usize);
-                        // Only evict if the price is better
-                        if inp_price >= Order::price(evict_node.key()) {
-                            msg!("Atellix: Orderbook Full - Price is not below evicted order");
+                        // Only evict if the price is better and quantity is equal or more
+                        if inp_price >= Order::price(evict_node.key()) || tokens_remaining < evict_order.amount() {
+                            msg!("Atellix: Orderbook Full - Price is not below evicted order or posted quantity is less than evicted order");
                             return Err(ErrorCode::OrderbookFull.into());
                         }
                         let evict_amount: u64 = evict_order.amount();
@@ -4191,8 +4204,21 @@ pub struct Initialize<'info> {
     pub system_program: Program<'info, System>,
 }
 
-// Remove before deployment
 #[derive(Accounts)]
+pub struct CloseAccount<'info> {
+    /// CHECK: ok
+    #[account(mut)]
+    pub data_account: UncheckedAccount<'info>,
+    #[account(constraint = program.programdata_address().unwrap() == Some(program_data.key()))]
+    pub program: Program<'info, AquaDex>,
+    #[account(constraint = program_data.upgrade_authority_address == Some(program_admin.key()))]
+    pub program_data: Account<'info, ProgramData>,
+    #[account(mut)]
+    pub program_admin: Signer<'info>,
+}
+
+// Remove before deployment
+/*#[derive(Accounts)]
 pub struct Deactivate<'info> {
     #[account(mut, seeds = [program_id.as_ref()], bump, close = program_admin)]
     pub root_data: Account<'info, RootData>,
@@ -4202,7 +4228,7 @@ pub struct Deactivate<'info> {
     pub program_data: Account<'info, ProgramData>,
     #[account(mut)]
     pub program_admin: Signer<'info>,
-}
+}*/
 
 #[derive(Accounts)]
 pub struct UpdateMetadata<'info> {
